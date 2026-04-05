@@ -4,8 +4,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 import httpx
-import asyncio
-import math
 from datetime import datetime
 import xml.etree.ElementTree as ET
 import logging
@@ -23,11 +21,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 # ─── API 설정 ────────────────────────────────────────────────
-# .env 파일에서 읽어옴
-TRADE_API_KEY = os.getenv("TRADE_API_KEY")       # 국토교통부 실거래가 API 키
-NAVER_MAPS_KEY = os.getenv("NAVER_MAPS_KEY")     # 네이버 지도 API 키
+TRADE_API_KEY = os.getenv("TRADE_API_KEY")
+NAVER_MAPS_KEY = os.getenv("NAVER_MAPS_KEY")
 
 TRADE_BASE = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+RENT_BASE  = "https://apis.data.go.kr/1613000/RTMSDataSvcAptRentDev/getRTMSDataSvcAptRentDev"
 
 # 서울 25개 자치구 코드 (법정동 코드 앞 5자리)
 DISTRICTS = {
@@ -45,13 +43,12 @@ DISTRICTS = {
 # 구별 아파트 데이터 메모리 캐시
 _cache: dict = {"apartments": {}}
 
-# 34평형 / 25평형 전용면적 범위 (㎡)
-PYEONG_34 = (79.0, 89.0)
-PYEONG_25 = (57.0, 65.0)
+# 마커 기준 면적 순서: 84㎡ 우선, 없으면 59㎡, 없으면 가장 가까운 면적
+PREFERRED_AREAS = [84, 59]
 
 
 def get_recent_deal_yms(count: int = 3) -> list:
-    """최근 N개월의 거래연월 리스트 반환 (예: ['202504', '202503', '202502'])"""
+    """최근 N개월의 거래연월 리스트 반환"""
     now = datetime.now()
     y, m = now.year, now.month
     result = []
@@ -76,13 +73,14 @@ def xml_items(text: str) -> list:
         return []
 
 
-def classify_pyeong(area: float):
-    """전용면적(㎡)으로 34평/25평 여부 판별, 해당 없으면 None"""
-    if PYEONG_34[0] <= area <= PYEONG_34[1]:
-        return "34평"
-    if PYEONG_25[0] <= area <= PYEONG_25[1]:
-        return "25평"
-    return None
+def find_main_area_key(area_map: dict) -> int:
+    """84㎡ → 59㎡ → 거래 많은 면적 순으로 대표 면적 반환 (오차 5㎡ 허용)"""
+    keys = sorted(area_map.keys())
+    for pref in PREFERRED_AREAS:
+        closest = min(keys, key=lambda a: abs(a - pref))
+        if abs(closest - pref) <= 5:
+            return closest
+    return max(keys, key=lambda a: len(area_map[a]))
 
 
 def trade_date_key(t: dict) -> tuple:
@@ -103,58 +101,49 @@ def format_price(manwon: int) -> str:
     return f"{int(eok)}억" if eok == int(eok) else f"{eok}억"
 
 
-# 동(洞) 좌표 캐시 (Nominatim API 중복 호출 방지)
-_geocode_cache: dict = {}
-
-async def geocode_dong(district: str, dong: str):
-    """동(洞) 이름으로 위도/경도 조회 (OpenStreetMap Nominatim 사용)
-    아파트 단지 정확도보다 느슨하지만, 같은 동끼리 오프셋으로 구분"""
-    key = f"{district}_{dong}"
-    if key in _geocode_cache:
-        return _geocode_cache[key]
-
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": f"서울특별시 {district} {dong}", "format": "json", "countrycodes": "kr", "limit": 1}
-    headers = {"User-Agent": "realestate-apt-map/1.0"}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(url, params=params, headers=headers)
-            if r.status_code == 200:
-                results = r.json()
-                if results:
-                    coords = (float(results[0]["lat"]), float(results[0]["lon"]))
-                    _geocode_cache[key] = coords
-                    return coords
-    except Exception as e:
-        logger.warning(f"geocode [{district} {dong}]: {e}")
-
-    _geocode_cache[key] = None
-    return None
 
 
-async def fetch_transactions(lawd_cd: str, deal_ym: str) -> list:
-    """국토교통부 API에서 특정 구/월의 아파트 실거래 내역 조회"""
-    url = (
-        f"{TRADE_BASE}?serviceKey={TRADE_API_KEY}"
-        f"&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ym}"
-        f"&numOfRows=1000&pageNo=1"
-    )
+async def _fetch(url: str, label: str) -> list:
+    """공통 API 호출"""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.get(url)
             if r.status_code == 200:
                 items = xml_items(r.text)
-                logger.info(f"  [{lawd_cd} {deal_ym}] {len(items)}건")
+                logger.info(f"  {label} {len(items)}건")
                 return items
-            logger.warning(f"  [{lawd_cd} {deal_ym}] HTTP {r.status_code}")
+            logger.warning(f"  {label} HTTP {r.status_code}")
     except Exception as e:
-        logger.error(f"fetch error {lawd_cd} {deal_ym}: {e}")
+        logger.error(f"fetch error {label}: {e}")
     return []
+
+
+async def fetch_transactions(lawd_cd: str, deal_ym: str) -> list:
+    """매매 실거래 조회 — 각 row에 trade_type='매매' 추가"""
+    url = (f"{TRADE_BASE}?serviceKey={TRADE_API_KEY}"
+           f"&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ym}&numOfRows=1000&pageNo=1")
+    rows = await _fetch(url, f"매매[{lawd_cd} {deal_ym}]")
+    for r in rows:
+        r["_type"] = "매매"
+    return rows
+
+
+async def fetch_rents(lawd_cd: str, deal_ym: str) -> list:
+    """전월세 실거래 조회 — 각 row에 trade_type 추가 (월세금액 > 0 이면 월세, 아니면 전세)"""
+    url = (f"{RENT_BASE}?serviceKey={TRADE_API_KEY}"
+           f"&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ym}&numOfRows=1000&pageNo=1")
+    rows = await _fetch(url, f"전월세[{lawd_cd} {deal_ym}]")
+    for r in rows:
+        try:
+            monthly = int(r.get("monthlyRent", "0") or "0")
+        except ValueError:
+            monthly = 0
+        r["_type"] = "월세" if monthly > 0 else "전세"
+    return rows
 
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    # 네이버 지도 키를 템플릿 변수로 주입
     return templates.TemplateResponse(request, "index.html", {
         "naver_maps_key": NAVER_MAPS_KEY,
     })
@@ -162,67 +151,74 @@ async def root(request: Request):
 
 @app.get("/api/districts")
 async def get_districts():
-    """서울 25개 자치구 목록 반환"""
     return {"districts": list(DISTRICTS.keys())}
 
 
 @app.get("/api/apartments")
 async def get_apartments(district: str = Query(default="강남구")):
-    """특정 구의 아파트 실거래 목록 반환 (25평/34평 필터, 동 단위 좌표 포함)"""
     if district not in DISTRICTS:
         return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
 
-    # 캐시 히트 시 바로 반환
     if district in _cache["apartments"]:
         return {"apartments": _cache["apartments"][district], "cached": True}
 
     lawd_cd = DISTRICTS[district]
-    deal_yms = get_recent_deal_yms(3)
+    deal_yms = get_recent_deal_yms(12)
 
-    # 최근 3개월 거래 데이터 수집
+    # 최근 12개월 매매 + 전월세 수집
     all_raw = []
     for ym in deal_yms:
-        rows = await fetch_transactions(lawd_cd, ym)
-        all_raw.extend(rows)
+        trades = await fetch_transactions(lawd_cd, ym)
+        rents  = await fetch_rents(lawd_cd, ym)
+        all_raw.extend(trades)
+        all_raw.extend(rents)
     logger.info(f"[{district}] 총 {len(all_raw)}건")
 
     if not all_raw:
         return {"apartments": [], "cached": False}
 
-    # 단지명+동 기준으로 그룹핑 (34평/25평 구분)
+    # 단지명+동 기준으로 그룹핑, 면적(㎡ 반올림)별로 세분화
     apt_map: dict = {}
     for row in all_raw:
         try:
             area = float(row.get("excluUseAr", 0))
         except (ValueError, TypeError):
             continue
-        ptype = classify_pyeong(area)
-        if not ptype:
+        if area <= 0:
             continue
+
+        area_key = round(area)
         name = row.get("aptNm", "").strip()
         dong = row.get("umdNm", "").strip()
         if not name:
             continue
-        key = f"{name}_{dong}"
-        if key not in apt_map:
-            apt_map[key] = {
-                "name": name, "dong": dong, "key": key,
-                "34평": [], "25평": [],
-                "buildYear": row.get("buildYear", ""),
-            }
-        apt_map[key][ptype].append(row)
 
-    # 거래 3건 미만 단지 제외 후 최신 거래 기준으로 정보 조립
+        apt_key = f"{name}_{dong}"
+        if apt_key not in apt_map:
+            apt_map[apt_key] = {
+                "name": name, "dong": dong, "key": apt_key,
+                "buildYear": row.get("buildYear", ""),
+                "jibun": row.get("jibun", "").strip(),
+                "areas": {},
+            }
+        apt_map[apt_key]["areas"].setdefault(area_key, []).append(row)
+
+    # 결과 조립
     candidates = []
     for apt in apt_map.values():
-        trades_34 = sorted(apt["34평"], key=trade_date_key, reverse=True)
-        trades_25 = sorted(apt["25평"], key=trade_date_key, reverse=True)
-        use_trades = trades_34 if trades_34 else trades_25
-        if not use_trades or len(use_trades) < 3:
+        area_groups = apt["areas"]
+        if not area_groups:
             continue
 
-        ptype = "34평" if trades_34 else "25평"
-        latest = use_trades[0]
+        # 대표 면적(마커 표시용): 매매만 기준
+        trade_only = {k: [r for r in v if r.get("_type") == "매매"]
+                      for k, v in area_groups.items()}
+        trade_only = {k: v for k, v in trade_only.items() if v}
+        if not trade_only:
+            continue
+        main_key = find_main_area_key(trade_only)
+        main_trades = sorted(trade_only[main_key], key=trade_date_key, reverse=True)
+        latest = main_trades[0]
         try:
             price_val = int(latest.get("dealAmount", "0").replace(",", ""))
         except (ValueError, TypeError):
@@ -230,65 +226,123 @@ async def get_apartments(district: str = Query(default="강남구")):
         if price_val <= 0:
             continue
 
-        # 최근 10건 거래 이력 구성
-        trade_history = []
-        for t in use_trades[:10]:
-            try:
-                p = int(t.get("dealAmount", "0").replace(",", ""))
-            except (ValueError, TypeError):
-                p = 0
-            y = t.get("dealYear", "")
-            mo = str(t.get("dealMonth", "")).zfill(2)
-            d = str(t.get("dealDay", "")).zfill(2)
-            trade_history.append({
-                "date": f"{y}.{mo}.{d}",
-                "price": p,
-                "price_display": format_price(p),
-                "floor": t.get("floor", ""),
-                "area": t.get("excluUseAr", ""),
-            })
-
         y = latest.get("dealYear", "")
         mo = str(latest.get("dealMonth", "")).zfill(2)
         d = str(latest.get("dealDay", "")).zfill(2)
+
+        # 면적 타입별 거래 이력 (매매+전월세 합산, 날짜 역순)
+        area_types = []
+        for area_key in sorted(area_groups.keys()):
+            all_trades = sorted(area_groups[area_key], key=trade_date_key, reverse=True)
+            lt_매매 = next((t for t in all_trades if t.get("_type") == "매매"), None)
+            if not lt_매매:
+                continue  # 매매 이력 없는 면적 타입 제외
+
+            try:
+                lt_price = int(lt_매매.get("dealAmount", "0").replace(",", ""))
+            except (ValueError, TypeError):
+                lt_price = 0
+            lt_y = lt_매매.get("dealYear", "")
+            lt_mo = str(lt_매매.get("dealMonth", "")).zfill(2)
+            lt_d = str(lt_매매.get("dealDay", "")).zfill(2)
+
+            trade_history = []
+            for t in all_trades:
+                ttype = t.get("_type", "매매")
+                ty = t.get("dealYear", "")[2:]   # 26 (2자리)
+                tmo = str(t.get("dealMonth", "")).zfill(2)
+                td = str(t.get("dealDay", "")).zfill(2)
+
+                if ttype == "매매":
+                    try:
+                        p = int(t.get("dealAmount", "0").replace(",", ""))
+                    except (ValueError, TypeError):
+                        p = 0
+                    price_str = format_price(p)
+                else:
+                    # 전세/월세: 보증금(deposit) + 월세(monthlyRent)
+                    try:
+                        deposit = int(t.get("deposit", "0").replace(",", ""))
+                    except (ValueError, TypeError):
+                        deposit = 0
+                    try:
+                        monthly = int(t.get("monthlyRent", "0") or "0")
+                    except (ValueError, TypeError):
+                        monthly = 0
+                    if monthly > 0:
+                        price_str = f"{format_price(deposit)}/{monthly:,}"
+                    else:
+                        price_str = format_price(deposit)
+                    p = deposit
+
+                # 정보: 계약갱신청구권(cdealType) 또는 거래유형(dealingGbn)
+                cdeal = (t.get("cdealType") or "").strip()
+                dealing = (t.get("dealingGbn") or "").strip()
+                info = cdeal if cdeal else dealing
+
+                trade_history.append({
+                    "year_month": f"{ty}.{tmo}",
+                    "day": td,
+                    "trade_type": ttype,
+                    "price": p,
+                    "price_display": price_str,
+                    "info": info,
+                    "apt_dong": (t.get("aptDong") or "").strip(),
+                    "floor": t.get("floor", ""),
+                    "area": t.get("excluUseAr", ""),
+                })
+
+            area_types.append({
+                "label": f"{area_key}㎡",
+                "area_key": area_key,
+                "latest_price": lt_price,
+                "latest_price_display": format_price(lt_price),
+                "latest_date": f"{lt_y}.{lt_mo}.{lt_d}",
+                "trades": trade_history,
+            })
+
+        # 전체 거래건수 (매매+전월세) — 단지 규모 추정에 사용
+        total_trades = sum(len(v) for v in area_groups.values())
+
         candidates.append({
             "key": apt["key"],
             "name": apt["name"],
             "dong": apt["dong"],
+            "jibun": apt["jibun"],
             "district": district,
             "price": price_val,
             "price_display": format_price(price_val),
-            "pyeong_type": ptype,
-            "area": float(latest.get("excluUseAr", 0)),
+            "main_area_label": f"{main_key}㎡",
             "built_year": apt.get("buildYear", ""),
             "latest_date": f"{y}.{mo}.{d}",
-            "trades": trade_history,
+            "area_types": area_types,
+            "total_trades": total_trades,
+            "is_champion": False,  # 동 내 최고가 여부, 아래서 업데이트
         })
 
-    # 동(洞) 단위 지오코딩 — 5개씩 배치 처리 (Nominatim 속도 제한 대응)
-    unique_dongs = list({a["dong"] for a in candidates})
-    for i in range(0, len(unique_dongs), 5):
-        batch_dongs = unique_dongs[i:i+5]
-        await asyncio.gather(*[geocode_dong(district, d) for d in batch_dongs])
-        if i + 5 < len(unique_dongs):
-            await asyncio.sleep(1.0)  # Nominatim 요청 간격 준수
-
-    # 같은 동 내 아파트끼리 겹치지 않도록 나선형 오프셋 적용 (~200m 반경)
-    dong_apt_counter: dict = {}
-    apartments = []
+    # 동(洞)별 통계 계산: 평균가
+    from collections import defaultdict
+    dong_prices: dict = defaultdict(list)
     for apt in candidates:
-        coords = _geocode_cache.get(f"{district}_{apt['dong']}")
-        if not coords:
-            continue
-        lat, lng = coords
-        idx = dong_apt_counter.get(apt["dong"], 0)
-        dong_apt_counter[apt["dong"]] = idx + 1
-        offset_r = 0.001 * (idx // 8 + 1)
-        angle = (idx % 8) * (3.14159 / 4)
-        lat += offset_r * math.cos(angle)
-        lng += offset_r * math.sin(angle)
-        apartments.append({**apt, "lat": round(lat, 6), "lng": round(lng, 6)})
+        dong_prices[apt["dong"]].append(apt["price"])
 
+    dong_avg: dict = {dong: round(sum(prices) / len(prices)) for dong, prices in dong_prices.items()}
+
+    # 구(區) 전체 최고가 단 1개만 대장
+    district_max_price = max((apt["price"] for apt in candidates), default=0)
+
+    for apt in candidates:
+        avg = dong_avg[apt["dong"]]
+        diff = apt["price"] - avg
+        apt["is_champion"] = apt["price"] == district_max_price
+        apt["dong_avg"] = avg
+        apt["dong_avg_display"] = format_price(avg)
+        apt["dong_diff"] = diff
+        apt["dong_diff_display"] = format_price(abs(diff))
+        apt["dong_apt_count"] = len(dong_prices[apt["dong"]])
+
+    # 좌표는 프론트에서 네이버 지도 geocoder로 처리
+    apartments = candidates[:]
     apartments.sort(key=lambda x: x["price"], reverse=True)
     _cache["apartments"][district] = apartments
     logger.info(f"[{district}] 마커: {len(apartments)}개")
@@ -297,11 +351,11 @@ async def get_apartments(district: str = Query(default="강남구")):
 
 @app.delete("/api/cache")
 async def clear_cache():
-    """메모리 캐시 전체 삭제"""
     _cache["apartments"].clear()
     return {"message": "캐시 삭제"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=9000, reload=True)
+    port = int(os.getenv("PORT", 9000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=(port == 9000))

@@ -7,8 +7,28 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>아파트 실거래가</title>
-  <!-- 네이버 지도 SDK: 서버에서 .env의 NAVER_MAPS_KEY를 주입 -->
-  <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId={{ naver_maps_key }}"></script>
+  <!-- document.write 가로채기:
+       Naver SDK가 geocoder를 document.write로 주입하면 Chrome이 차단함.
+       미리 가로채서 동적 <script> 삽입으로 교체. -->
+  <script>
+    (function() {
+      var _dw = document.write.bind(document);
+      document.write = function(markup) {
+        var m = markup.match(/src=["']([^"']+)["']/);
+        if (m && m[1].indexOf('maps-geocoder') !== -1) {
+          var s = document.createElement('script');
+          s.src = m[1];
+          document.head.appendChild(s);
+        } else {
+          _dw(markup);
+        }
+      };
+    })();
+  </script>
+  <!-- 네이버 지도 SDK: geocoder 서브모듈 포함 -->
+  <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId={{ naver_maps_key }}&submodules=geocoder"></script>
+  <!-- Chart.js: 실거래 가격 추이 차트 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -21,6 +41,7 @@
       --gray: #6b7280;
       --border: #e5e7eb;
       --header-h: 52px;
+      --filter-h: 36px;
       --tab-h: 48px;
     }
 
@@ -32,7 +53,7 @@
        fixed 레이아웃은 wrapper가 담당하고, #map은 100% 채움 */
     #map-wrap {
       position: fixed;
-      top: calc(var(--safe-top) + var(--header-h));
+      top: calc(var(--safe-top) + var(--header-h) + var(--filter-h));
       left: 0; right: 0;
       bottom: var(--tab-h);
     }
@@ -107,6 +128,7 @@
       position: relative;
       display: inline-block;
       line-height: 1.3;
+      text-align: center;
       -webkit-tap-highlight-color: transparent;
     }
     .price-tag::after {
@@ -118,6 +140,12 @@
       border-top-color: var(--blue);
       border-bottom: 0;
     }
+    /* 대장 아파트 — 진한 보라색 */
+    .price-tag.champion {
+      background: #6d28d9;
+      box-shadow: 0 2px 8px rgba(109,40,217,.45);
+    }
+    .price-tag.champion::after { border-top-color: #6d28d9; }
     .price-tag.active {
       background: var(--red);
       box-shadow: 0 3px 10px rgba(239,68,68,.4);
@@ -127,20 +155,61 @@
       font-size: 10px;
       font-weight: 500;
       opacity: .9;
-      margin-bottom: 2px;
+      margin-bottom: 1px;
       white-space: nowrap;
     }
+    .price-tag .crown { font-size: 11px; margin-right: 2px; }
     .price-tag .sub {
       font-size: 9px;
       font-weight: 400;
       opacity: .85;
       margin-left: 2px;
     }
+    .price-tag .built {
+      font-size: 9px;
+      font-weight: 400;
+      opacity: .75;
+      display: block;
+      margin-top: 1px;
+    }
+
+    /* ── 세대수 필터 칩 ── */
+    #filter-scroll {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border);
+      background: #fff;
+      position: fixed;
+      top: calc(var(--safe-top) + var(--header-h));
+      left: 0; right: 0;
+      z-index: 490;
+    }
+    #filter-scroll::-webkit-scrollbar { display: none; }
+    .filter-chip {
+      flex-shrink: 0;
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1.5px solid var(--border);
+      background: #fff;
+      font-size: 12px;
+      font-weight: 500;
+      color: #374151;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .filter-chip.active {
+      background: #f5f3ff;
+      border-color: #6d28d9;
+      color: #6d28d9;
+    }
 
     /* ── 로딩 오버레이 ── */
     #loading {
       position: fixed;
-      top: calc(var(--safe-top) + var(--header-h));
+      top: calc(var(--safe-top) + var(--header-h) + var(--filter-h));
       left: 0; right: 0; bottom: var(--tab-h);
       background: rgba(255,255,255,.82);
       backdrop-filter: blur(3px);
@@ -208,51 +277,152 @@
     #sheet-meta {
       font-size: 12px;
       color: var(--gray);
+      margin-bottom: 6px;
     }
+    /* 동 평균 비교 바 */
+    #sheet-dong-compare {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f9fafb;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 12px;
+    }
+    #sheet-dong-compare .avg-label { color: var(--gray); flex-shrink: 0; }
+    #sheet-dong-compare .avg-price { color: var(--dark); font-weight: 600; }
+    #sheet-dong-compare .diff-badge {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 20px;
+    }
+    .diff-up   { background: #fef2f2; color: #dc2626; }
+    .diff-down { background: #f0fdf4; color: #16a34a; }
+    .diff-same { background: #f3f4f6; color: var(--gray); }
+    /* ── 평형 선택 + 가격 행 ── */
     #sheet-price-row {
-      padding: 12px 18px;
+      padding: 10px 16px 12px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
+    #sheet-area-select {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--dark);
+      background: #f9fafb;
+      margin-bottom: 8px;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    #sheet-price-wrap {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
     #sheet-price {
-      font-size: 26px;
+      font-size: 24px;
       font-weight: 800;
       color: var(--blue);
     }
     #sheet-price-date {
       font-size: 11px;
       color: var(--gray);
-      margin-top: 2px;
     }
+    /* ── 차트 영역 ── */
+    #sheet-chart-wrap {
+      padding: 12px 16px 4px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #sheet-chart-wrap canvas { width: 100% !important; }
     #sheet-trades {
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
       flex: 1;
       padding-bottom: var(--safe-bottom);
     }
-    .trade-item {
+
+    /* ── 면적 타입 섹션 ── */
+    .area-section { border-bottom: 8px solid #f3f4f6; }
+    .area-section:last-child { border-bottom: none; }
+    .area-header {
       display: flex;
       align-items: center;
-      padding: 11px 18px;
-      border-bottom: 1px solid #f3f4f6;
+      gap: 8px;
+      padding: 10px 16px;
+      background: #f0f4ff;
+      border-bottom: 1px solid #dbeafe;
+      position: sticky;
+      top: 0;
+      z-index: 1;
     }
-    .trade-item:last-child { border-bottom: none; }
-    .trade-date {
-      font-size: 12px;
-      color: var(--gray);
-      width: 80px;
-      flex-shrink: 0;
+    .area-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--blue);
     }
-    .trade-price {
-      font-size: 14px;
+    .area-latest-price {
+      font-size: 13px;
       font-weight: 600;
       color: var(--dark);
       flex: 1;
     }
-    .trade-floor {
-      font-size: 12px;
-      color: #9ca3af;
+    .area-latest-date {
+      font-size: 11px;
+      color: var(--gray);
     }
+
+    /* ── 거래 테이블 ── */
+    .trade-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .trade-table thead tr {
+      background: #f9fafb;
+      border-bottom: 1px solid var(--border);
+    }
+    .trade-table thead th {
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--gray);
+      text-align: left;
+    }
+    .trade-table thead th:last-child { text-align: right; }
+    .trade-table tbody tr {
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .trade-table tbody tr:last-child { border-bottom: none; }
+    .trade-table tbody td {
+      padding: 9px 8px;
+      vertical-align: middle;
+    }
+    .col-ym    { color: var(--gray); white-space: nowrap; }
+    .col-day   { color: #9ca3af; }
+    .col-info  { color: #6b7280; font-size: 11px; white-space: nowrap; }
+    .col-price { font-size: 13px; font-weight: 600; color: var(--dark); }
+    .col-tt .badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 5px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .badge-매매 { background: #eff6ff; color: var(--blue); }
+    .badge-전세 { background: #f0fdf4; color: #16a34a; }
+    .badge-월세 { background: #fff7ed; color: #ea580c; }
+    .col-dong  { color: #9ca3af; font-size: 11px; white-space: nowrap; text-align: right; }
     #sheet-close {
       position: absolute;
       top: 14px; right: 14px;
@@ -305,7 +475,7 @@
     /* ── 단지 수 뱃지 ── */
     #count-badge {
       position: fixed;
-      top: calc(var(--safe-top) + var(--header-h) + 10px);
+      top: calc(var(--safe-top) + var(--header-h) + var(--filter-h) + 8px);
       left: 50%;
       transform: translateX(-50%);
       background: rgba(17,24,39,.78);
@@ -327,6 +497,14 @@
 <div id="header">
   <div id="header-logo">아파트 <span>실거래</span></div>
   <div id="district-scroll"></div>
+</div>
+
+<!-- 세대수 필터 (거래량 기반 추정) -->
+<div id="filter-scroll">
+  <button class="filter-chip" data-min="0">전체</button>
+  <button class="filter-chip active" data-min="20">300세대+</button>
+  <button class="filter-chip" data-min="40">500세대+</button>
+  <button class="filter-chip" data-min="80">1000세대+</button>
 </div>
 
 <!-- 지도 -->
@@ -351,10 +529,19 @@
   <div id="sheet-header">
     <div id="sheet-name"></div>
     <div id="sheet-meta"></div>
+    <div id="sheet-dong-compare"></div>
   </div>
   <div id="sheet-price-row">
-    <div id="sheet-price"></div>
-    <div id="sheet-price-date"></div>
+    <!-- 평형 드롭다운 -->
+    <select id="sheet-area-select"></select>
+    <div id="sheet-price-wrap">
+      <div id="sheet-price"></div>
+      <div id="sheet-price-date"></div>
+    </div>
+  </div>
+  <!-- 가격 추이 차트 -->
+  <div id="sheet-chart-wrap">
+    <canvas id="sheet-chart" height="120"></canvas>
   </div>
   <div id="sheet-trades"></div>
 </div>
@@ -384,6 +571,8 @@ let markers = [];
 let activeMarkerEl = null;
 let currentDistrict = '강남구';
 let isBusy = false;
+let allApartments = [];  // 전체 데이터 보관 (필터 재적용용)
+let minTradeFilter = 20;  // 기본: 300세대+ 추정 (12개월 거래 20건 이상)
 
 // ── 지도 초기화 ────────────────────────────────────────────
 function initMap() {
@@ -396,6 +585,30 @@ function initMap() {
     mapDataControl: false,
   });
   naver.maps.Event.addListener(map, 'click', closeSheet);
+}
+
+// ── 세대수 필터 ────────────────────────────────────────────
+function buildFilterBar() {
+  document.querySelectorAll('.filter-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      minTradeFilter = parseInt(btn.dataset.min);
+      // 데이터 재요청 없이 필터만 재적용
+      clearMarkers();
+      closeSheet();
+      applyFilterAndRender(currentDistrict);
+    });
+  });
+}
+
+function applyFilterAndRender(district) {
+  const filtered = allApartments.filter(a => a.total_trades >= minTradeFilter);
+  if (!filtered.length) {
+    showBadge(`${district} · 조건에 맞는 단지 없음`);
+    return;
+  }
+  renderMarkers(filtered, district);
 }
 
 // ── 구 선택 탭 ─────────────────────────────────────────────
@@ -438,7 +651,8 @@ async function loadApartments(district) {
       return;
     }
 
-    renderMarkers(apts, district);
+    allApartments = apts;
+    applyFilterAndRender(district);
   } catch (e) {
     console.error(e);
     setLoading(false);
@@ -448,34 +662,76 @@ async function loadApartments(district) {
   }
 }
 
-// ── 마커 렌더 (서버에서 받은 좌표 사용) ──────────────────────
-function renderMarkers(apts, district) {
+// ── geocoder 준비 대기 (document.write 비동기 로드 대응) ──
+function waitForGeocoder(timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    if (window.naver?.maps?.Service?.geocode) { resolve(); return; }
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (window.naver?.maps?.Service?.geocode) { clearInterval(timer); resolve(); }
+      else if (Date.now() - start > timeout) { clearInterval(timer); reject(new Error('geocoder timeout')); }
+    }, 100);
+  });
+}
+
+// ── 네이버 geocoder로 주소 → 좌표 변환 (8초 timeout) ─────
+function geocodeAddress(query) {
+  return new Promise(resolve => {
+    if (!window.naver?.maps?.Service?.geocode) { resolve(null); return; }
+    const timer = setTimeout(() => resolve(null), 8000);
+    naver.maps.Service.geocode({ query }, (status, res) => {
+      clearTimeout(timer);
+      if (status !== naver.maps.Service.Status.OK || !res.v2?.addresses?.length) {
+        resolve(null);
+        return;
+      }
+      const { x, y } = res.v2.addresses[0];
+      resolve(new naver.maps.LatLng(parseFloat(y), parseFloat(x)));
+    });
+  });
+}
+
+// ── 마커 렌더 — 네이버 geocoder로 좌표 획득 ─────────────────
+async function renderMarkers(apts, district) {
   if (!map) { console.error('지도 미초기화'); return; }
 
-  const withCoords = apts.filter(a => a.lat && a.lng);
-  if (!withCoords.length) {
-    showBadge(`${district} · 위치 데이터 없음`);
-    setLoading(false);
-    return;
+  const bounds = new naver.maps.LatLngBounds();
+  let placed = 0;
+
+  // 5개씩 병렬 지오코딩
+  for (let i = 0; i < apts.length; i += 5) {
+    const batch = apts.slice(i, i + 5);
+    const results = await Promise.all(batch.map(apt => {
+      const query = `서울특별시 ${apt.district} ${apt.dong} ${apt.jibun}`;
+      return geocodeAddress(query);
+    }));
+
+    results.forEach((pos, idx) => {
+      if (!pos) return;
+      bounds.extend(pos);
+      placeMarker(batch[idx], pos);
+      placed++;
+    });
+
+    setLoading(true, `${district} 위치 조회 중...`, `${Math.min(i + 5, apts.length)} / ${apts.length}`);
   }
 
-  const bounds = new naver.maps.LatLngBounds();
-  withCoords.forEach(apt => {
-    const pos = new naver.maps.LatLng(apt.lat, apt.lng);
-    bounds.extend(pos);
-    placeMarker(apt, pos);
-  });
-
-  map.fitBounds(bounds, { top: 70, right: 20, bottom: 80, left: 20 });
-  showBadge(`${district} · ${withCoords.length}개 단지`);
+  if (!placed) {
+    showBadge(`${district} · 위치 데이터 없음`);
+  } else {
+    map.fitBounds(bounds, { top: 70, right: 20, bottom: 80, left: 20 });
+    showBadge(`${district} · ${placed}개 단지`);
+  }
   setLoading(false);
 }
 
 // ── 마커 배치 ──────────────────────────────────────────────
 function placeMarker(apt, pos) {
   const el = document.createElement('div');
-  el.className = 'price-tag';
-  el.innerHTML = `<div class="apt-name">${apt.name}</div>${apt.price_display}<span class="sub">${apt.pyeong_type}</span>`;
+  el.className = 'price-tag' + (apt.is_champion ? ' champion' : '');
+  const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
+  const built = apt.built_year ? `<span class="built">${apt.built_year}년 입주</span>` : '';
+  el.innerHTML = `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub">${apt.main_area_label}</span>${built}`;
 
   const marker = new naver.maps.Marker({
     position: pos,
@@ -503,31 +759,158 @@ function clearMarkers() {
 }
 
 // ── 하단 시트 ──────────────────────────────────────────────
+let currentApt = null;
+let sheetChart = null;
+
 function openSheet(apt) {
+  currentApt = apt;
   document.getElementById('sheet-name').textContent = apt.name;
-  const area = apt.area ? apt.area.toFixed(2) + '㎡' : '';
-  const built = apt.built_year ? ` · ${apt.built_year}년` : '';
-  document.getElementById('sheet-meta').textContent =
-    `${apt.dong} · ${apt.pyeong_type}(${area})${built}`;
+  const built = apt.built_year ? `${apt.built_year}년 · ` : '';
+  document.getElementById('sheet-meta').textContent = `${built}${apt.dong}`;
 
-  document.getElementById('sheet-price').textContent = apt.price_display;
-  document.getElementById('sheet-price-date').textContent =
-    `최근 거래일 ${apt.latest_date}`;
-
-  const tradesEl = document.getElementById('sheet-trades');
-  if (!apt.trades || !apt.trades.length) {
-    tradesEl.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:13px">거래 내역 없음</div>';
+  // 동 평균 비교
+  const cmp = document.getElementById('sheet-dong-compare');
+  if (apt.dong_avg && apt.dong_apt_count > 1) {
+    const diff = apt.dong_diff;
+    const cls = diff > 0 ? 'diff-up' : diff < 0 ? 'diff-down' : 'diff-same';
+    const sign = diff > 0 ? '▲' : diff < 0 ? '▼' : '=';
+    const diffTxt = diff === 0 ? '평균과 동일' : `평균보다 ${apt.dong_diff_display} ${diff > 0 ? '높음' : '낮음'}`;
+    cmp.style.display = 'flex';
+    cmp.innerHTML = `
+      <span class="avg-label">${apt.dong} 평균 (${apt.dong_apt_count}개 단지)</span>
+      <span class="avg-price">${apt.dong_avg_display}</span>
+      <span class="diff-badge ${cls}">${sign} ${diffTxt}</span>
+    `;
   } else {
-    tradesEl.innerHTML = apt.trades.map(t => `
-      <div class="trade-item">
-        <span class="trade-date">${t.date}</span>
-        <span class="trade-price">${t.price_display}</span>
-        <span class="trade-floor">${t.floor ? t.floor + '층' : ''}</span>
-      </div>
-    `).join('');
+    cmp.style.display = 'none';
   }
 
+  // 평형 드롭다운 구성 — 34평(84㎡) 우선 선택
+  const sel = document.getElementById('sheet-area-select');
+  sel.innerHTML = '';
+  const preferredKeys = [84, 85, 83, 59, 60, 58]; // 34평 → 25평 우선순위
+  const types = apt.area_types || [];
+  let defaultIdx = 0;
+  for (const pref of preferredKeys) {
+    const found = types.findIndex(t => t.area_key === pref);
+    if (found !== -1) { defaultIdx = found; break; }
+  }
+  types.forEach((at, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = `${at.label}  ·  최근 ${at.latest_price_display}  (${at.latest_date})`;
+    sel.appendChild(opt);
+  });
+  sel.value = defaultIdx;
+  sel.onchange = () => renderSheetArea(apt, parseInt(sel.value));
+  renderSheetArea(apt, defaultIdx);
+
   document.getElementById('sheet').classList.add('open');
+}
+
+function renderSheetArea(apt, idx) {
+  const at = (apt.area_types || [])[idx];
+  if (!at) return;
+
+  // 가격 표시
+  document.getElementById('sheet-price').textContent = at.latest_price_display;
+  document.getElementById('sheet-price-date').textContent = at.latest_date;
+
+  // 차트 — 매매 거래만, 날짜 오름차순
+  const saleTrades = at.trades.filter(t => t.trade_type === '매매').reverse();
+  renderChart(saleTrades);
+
+  // 거래 테이블
+  const tradesEl = document.getElementById('sheet-trades');
+  if (!at.trades.length) {
+    tradesEl.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:13px">거래 내역 없음</div>';
+    return;
+  }
+  tradesEl.innerHTML = `
+    <table class="trade-table">
+      <thead>
+        <tr>
+          <th>계약</th>
+          <th>일</th>
+          <th>정보</th>
+          <th>가격</th>
+          <th>타입</th>
+          <th style="text-align:right">거래동/층</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${at.trades.map(t => {
+          const dongFloor = [t.apt_dong, t.floor ? t.floor + '층' : ''].filter(Boolean).join(' ');
+          return `
+            <tr>
+              <td class="col-ym">${t.year_month}</td>
+              <td class="col-day">${t.day}</td>
+              <td class="col-info">${t.info || '-'}</td>
+              <td class="col-price">${t.price_display}</td>
+              <td class="col-tt"><span class="badge badge-${t.trade_type}">${t.trade_type}</span></td>
+              <td class="col-dong">${dongFloor || '-'}</td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderChart(saleTrades) {
+  const canvas = document.getElementById('sheet-chart');
+  const wrap = document.getElementById('sheet-chart-wrap');
+
+  if (sheetChart) { sheetChart.destroy(); sheetChart = null; }
+
+  if (!saleTrades.length) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'block';
+
+  const labels = saleTrades.map(t => `${t.year_month}.${t.day}`);
+  const prices = saleTrades.map(t => t.price || 0);
+
+  sheetChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: prices,
+        borderColor: '#2563eb',
+        backgroundColor: 'rgba(37,99,235,0.08)',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointBackgroundColor: '#2563eb',
+        tension: 0.3,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: {
+          label: ctx => {
+            const v = ctx.raw;
+            const eok = Math.floor(v / 10000);
+            const rem = v % 10000;
+            return eok && rem ? `${eok}억 ${rem.toLocaleString()}만` : eok ? `${eok}억` : `${v.toLocaleString()}만`;
+          }
+        }
+      }},
+      scales: {
+        x: { ticks: { font: { size: 10 }, maxTicksLimit: 6 }, grid: { display: false } },
+        y: {
+          min: prices.length ? Math.max(0, Math.min(...prices) - 100000) : undefined,
+          ticks: { font: { size: 10 }, callback: v => {
+            const e = Math.floor(v/10000); return e ? `${e}억` : `${v/1000}천`;
+          }},
+          grid: { color: '#f3f4f6' }
+        }
+      }
+    }
+  });
 }
 
 function closeSheet() {
@@ -572,13 +955,19 @@ function refreshData() {
 // ── 시작 ───────────────────────────────────────────────────
 document.getElementById('sheet-close').addEventListener('click', closeSheet);
 
-function startApp() {
+async function startApp() {
   initMap();
   buildDistrictBar();
+  buildFilterBar();
+  // geocoder가 비동기로 로드되므로 준비될 때까지 대기
+  try {
+    await waitForGeocoder(10000);
+  } catch(e) {
+    console.warn('geocoder 로드 실패 — 좌표 조회 불가:', e);
+  }
   loadApartments(currentDistrict);
 }
 
-// SDK가 <head>에서 동기 로드되므로 여기서 바로 실행 가능
 startApp();
 </script>
 </body>
