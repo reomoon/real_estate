@@ -403,7 +403,7 @@
     #chart-summary.visible { display: flex; }
     #chart-summary .sum-range { color: #010814; font-size: 11px; }
     #chart-summary .sum-change { margin-left: auto; font-weight: 700; font-size: 12px; }
-    .sum-up   { color: #f87171; }
+    .sum-up   { color: #4f3232; }
     .sum-down { color: #34d399; }
     .sum-flat { color: #9ca3af; }
 
@@ -1166,9 +1166,10 @@ function tradeFullYear(ym) {
 
 function fmtPrice(v) {
   if (!v) return '-';
-  const eok = Math.floor(v / 10000);
-  const rem = v % 10000;
-  return eok && rem ? `${eok}억 ${rem.toLocaleString()}만` : eok ? `${eok}억` : `${v.toLocaleString()}만`;
+  if (v < 10000) return `${v.toLocaleString()}만`;
+  const eok = Math.round(v / 10000 * 100) / 100; // 소수점 둘째 자리
+  if (eok === Math.floor(eok)) return `${Math.floor(eok)}억`;
+  return `${eok.toFixed(2).replace(/\.?0+$/, '')}억`;
 }
 
 function parseTradeDate(t) {

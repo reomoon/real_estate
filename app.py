@@ -154,13 +154,17 @@ def trade_date_key(t: dict) -> tuple:
 
 
 def format_price(manwon: int) -> str:
-    """만원 단위 금액을 '40.5억' 형식 문자열로 변환 (1억 미만은 '9,500만')"""
+    """만원 단위 금액을 '40.51억' 형식 문자열로 변환 (1억 미만은 '9,500만')"""
     if manwon <= 0:
         return "-"
     if manwon < 10000:
         return f"{manwon:,}만"
-    eok = round(manwon / 10000, 1)
-    return f"{int(eok)}억" if eok == int(eok) else f"{eok}억"
+    eok = round(manwon / 10000, 2)
+    if eok == int(eok):
+        return f"{int(eok)}억"
+    # 소수점 둘째 자리까지, 불필요한 0 제거
+    s = f"{eok:.2f}".rstrip('0').rstrip('.')
+    return f"{s}억"
 
 
 
