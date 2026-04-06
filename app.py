@@ -8,6 +8,7 @@ from datetime import datetime
 import xml.etree.ElementTree as ET
 import logging
 import os
+import json
 from dotenv import load_dotenv
 
 # .env 파일에서 환경변수 로드
@@ -27,21 +28,82 @@ NAVER_MAPS_KEY = os.getenv("NAVER_MAPS_KEY")
 TRADE_BASE = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
 RENT_BASE  = "https://apis.data.go.kr/1613000/RTMSDataSvcAptRentDev/getRTMSDataSvcAptRentDev"
 
-# 서울 25개 자치구 코드 (법정동 코드 앞 5자리)
-DISTRICTS = {
-    "종로구": "11110", "중구": "11140", "용산구": "11170",
-    "성동구": "11200", "광진구": "11215", "동대문구": "11230",
-    "중랑구": "11260", "성북구": "11290", "강북구": "11305",
-    "도봉구": "11320", "노원구": "11350", "은평구": "11380",
-    "서대문구": "11410", "마포구": "11440", "양천구": "11470",
-    "강서구": "11500", "구로구": "11530", "금천구": "11545",
-    "영등포구": "11560", "동작구": "11590", "관악구": "11620",
-    "서초구": "11650", "강남구": "11680", "송파구": "11710",
-    "강동구": "11740",
+# 지역별 법정동 코드 (값은 리스트 — 수원시처럼 여러 구를 가진 시는 복수 코드)
+DISTRICTS: dict[str, list[str]] = {
+    # ── 서울 ──────────────────────────────────────────────────
+    "종로구":   ["11110"], "중구":    ["11140"], "용산구":   ["11170"],
+    "성동구":   ["11200"], "광진구":  ["11215"], "동대문구": ["11230"],
+    "중랑구":   ["11260"], "성북구":  ["11290"], "강북구":   ["11305"],
+    "도봉구":   ["11320"], "노원구":  ["11350"], "은평구":   ["11380"],
+    "서대문구": ["11410"], "마포구":  ["11440"], "양천구":   ["11470"],
+    "강서구":   ["11500"], "구로구":  ["11530"], "금천구":   ["11545"],
+    "영등포구": ["11560"], "동작구":  ["11590"], "관악구":   ["11620"],
+    "서초구":   ["11650"], "강남구":  ["11680"], "송파구":   ["11710"],
+    "강동구":   ["11740"],
+    # ── 인천 ──────────────────────────────────────────────────
+    "인천중구": ["28110"], "인천동구": ["28140"], "미추홀구": ["28177"],
+    "연수구":   ["28185"], "남동구":   ["28200"], "부평구":   ["28237"],
+    "계양구":   ["28245"], "인천서구": ["28260"],
+    "강화군":   ["28710"], "옹진군":   ["28720"],
+    # ── 경기 ──────────────────────────────────────────────────
+    "수원시":   ["41111","41113","41115","41117"],
+    "성남시":   ["41131","41133","41135"],
+    "의정부시": ["41150"],
+    "안양시":   ["41171","41173"],
+    "부천시":   ["41190"],
+    "광명시":   ["41210"],
+    "평택시":   ["41220"],
+    "동두천시": ["41250"],
+    "안산시":   ["41271","41273"],
+    "고양시":   ["41281","41285","41287"],
+    "과천시":   ["41290"],
+    "구리시":   ["41310"],
+    "남양주시": ["41360"],
+    "오산시":   ["41370"],
+    "시흥시":   ["41390"],
+    "군포시":   ["41410"],
+    "의왕시":   ["41430"],
+    "하남시":   ["41450"],
+    "용인시":   ["41461","41463","41465"],
+    "파주시":   ["41480"],
+    "이천시":   ["41500"],
+    "안성시":   ["41550"],
+    "김포시":   ["41570"],
+    "화성시":   ["41590"],
+    "광주시":   ["41610"],
+    "양주시":   ["41630"],
+    "포천시":   ["41650"],
+    "여주시":   ["41670"],
+    "연천군":   ["41800"],
+    "가평군":   ["41820"],
+    "양평군":   ["41830"],
 }
 
 # 구별 아파트 데이터 메모리 캐시
 _cache: dict = {"apartments": {}}
+
+# ─── 좌표 캐시 (파일 영속) ────────────────────────────────────
+GEO_CACHE_FILE = "geo_cache.json"
+_geo_cache: dict = {}
+
+def _load_geo_cache():
+    global _geo_cache
+    try:
+        if os.path.exists(GEO_CACHE_FILE):
+            with open(GEO_CACHE_FILE, encoding="utf-8") as f:
+                _geo_cache = json.load(f)
+            logger.info(f"geo cache 로드: {len(_geo_cache)}개")
+    except Exception as e:
+        logger.warning(f"geo cache 로드 실패: {e}")
+
+def _save_geo_cache():
+    try:
+        with open(GEO_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_geo_cache, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"geo cache 저장 실패: {e}")
+
+_load_geo_cache()
 
 # 마커 기준 면적 순서: 84㎡ 우선, 없으면 59㎡, 없으면 가장 가까운 면적
 PREFERRED_AREAS = [84, 59]
@@ -118,11 +180,25 @@ async def _fetch(url: str, label: str) -> list:
     return []
 
 
+async def _fetch_all_pages(base_url: str, label: str) -> list:
+    """1000건 제한 우회 — 페이지네이션으로 전체 수집"""
+    all_items = []
+    page = 1
+    while True:
+        url = f"{base_url}&numOfRows=1000&pageNo={page}"
+        items = await _fetch(url, f"{label} p{page}")
+        all_items.extend(items)
+        if len(items) < 1000:
+            break
+        page += 1
+    return all_items
+
+
 async def fetch_transactions(lawd_cd: str, deal_ym: str) -> list:
     """매매 실거래 조회 — 각 row에 trade_type='매매' 추가"""
-    url = (f"{TRADE_BASE}?serviceKey={TRADE_API_KEY}"
-           f"&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ym}&numOfRows=1000&pageNo=1")
-    rows = await _fetch(url, f"매매[{lawd_cd} {deal_ym}]")
+    base = (f"{TRADE_BASE}?serviceKey={TRADE_API_KEY}"
+            f"&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ym}")
+    rows = await _fetch_all_pages(base, f"매매[{lawd_cd} {deal_ym}]")
     for r in rows:
         r["_type"] = "매매"
     return rows
@@ -130,9 +206,9 @@ async def fetch_transactions(lawd_cd: str, deal_ym: str) -> list:
 
 async def fetch_rents(lawd_cd: str, deal_ym: str) -> list:
     """전월세 실거래 조회 — 각 row에 trade_type 추가 (월세금액 > 0 이면 월세, 아니면 전세)"""
-    url = (f"{RENT_BASE}?serviceKey={TRADE_API_KEY}"
-           f"&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ym}&numOfRows=1000&pageNo=1")
-    rows = await _fetch(url, f"전월세[{lawd_cd} {deal_ym}]")
+    base = (f"{RENT_BASE}?serviceKey={TRADE_API_KEY}"
+            f"&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ym}")
+    rows = await _fetch_all_pages(base, f"전월세[{lawd_cd} {deal_ym}]")
     for r in rows:
         try:
             monthly = int(r.get("monthlyRent", "0") or "0")
@@ -162,16 +238,18 @@ async def get_apartments(district: str = Query(default="강남구")):
     if district in _cache["apartments"]:
         return {"apartments": _cache["apartments"][district], "cached": True}
 
-    lawd_cd = DISTRICTS[district]
+    lawd_codes = DISTRICTS[district]
     deal_yms = get_recent_deal_yms(12)
 
-    # 최근 12개월 매매 + 전월세 수집
-    all_raw = []
-    for ym in deal_yms:
-        trades = await fetch_transactions(lawd_cd, ym)
-        rents  = await fetch_rents(lawd_cd, ym)
-        all_raw.extend(trades)
-        all_raw.extend(rents)
+    # 최근 12개월 × 코드 수 × 2타입 — 전체 병렬 호출
+    import asyncio
+    tasks = []
+    for code in lawd_codes:
+        for ym in deal_yms:
+            tasks.append(fetch_transactions(code, ym))
+            tasks.append(fetch_rents(code, ym))
+    results = await asyncio.gather(*tasks)
+    all_raw = [row for batch in results for row in batch]
     logger.info(f"[{district}] 총 {len(all_raw)}건")
 
     if not all_raw:
@@ -187,7 +265,7 @@ async def get_apartments(district: str = Query(default="강남구")):
         if area <= 0:
             continue
 
-        area_key = round(area)
+        area_key = round(area / 3) * 3  # 3㎡ 단위로 묶어 59/60㎡ 쪼개짐 방지
         name = row.get("aptNm", "").strip()
         dong = row.get("umdNm", "").strip()
         if not name:
@@ -235,16 +313,25 @@ async def get_apartments(district: str = Query(default="강남구")):
         for area_key in sorted(area_groups.keys()):
             all_trades = sorted(area_groups[area_key], key=trade_date_key, reverse=True)
             lt_매매 = next((t for t in all_trades if t.get("_type") == "매매"), None)
-            if not lt_매매:
-                continue  # 매매 이력 없는 면적 타입 제외
+            lt_latest = all_trades[0]  # 타입 무관 최신 거래
 
-            try:
-                lt_price = int(lt_매매.get("dealAmount", "0").replace(",", ""))
-            except (ValueError, TypeError):
-                lt_price = 0
-            lt_y = lt_매매.get("dealYear", "")
-            lt_mo = str(lt_매매.get("dealMonth", "")).zfill(2)
-            lt_d = str(lt_매매.get("dealDay", "")).zfill(2)
+            if lt_매매:
+                try:
+                    lt_price = int(lt_매매.get("dealAmount", "0").replace(",", ""))
+                except (ValueError, TypeError):
+                    lt_price = 0
+                lt_y = lt_매매.get("dealYear", "")
+                lt_mo = str(lt_매매.get("dealMonth", "")).zfill(2)
+                lt_d = str(lt_매매.get("dealDay", "")).zfill(2)
+            else:
+                # 매매 없음 → 최신 전월세 기준
+                try:
+                    lt_price = int(lt_latest.get("deposit", "0").replace(",", ""))
+                except (ValueError, TypeError):
+                    lt_price = 0
+                lt_y = lt_latest.get("dealYear", "")
+                lt_mo = str(lt_latest.get("dealMonth", "")).zfill(2)
+                lt_d = str(lt_latest.get("dealDay", "")).zfill(2)
 
             trade_history = []
             for t in all_trades:
@@ -310,6 +397,9 @@ async def get_apartments(district: str = Query(default="강남구")):
             "dong": apt["dong"],
             "jibun": apt["jibun"],
             "district": district,
+            "region": ("경기" if any(c.startswith("41") for c in lawd_codes)
+                       else "인천" if any(c.startswith("28") for c in lawd_codes)
+                       else "서울"),
             "price": price_val,
             "price_display": format_price(price_val),
             "main_area_label": f"{main_key}㎡",
@@ -341,12 +431,30 @@ async def get_apartments(district: str = Query(default="강남구")):
         apt["dong_diff_display"] = format_price(abs(diff))
         apt["dong_apt_count"] = len(dong_prices[apt["dong"]])
 
-    # 좌표는 프론트에서 네이버 지도 geocoder로 처리
+    # 서버 geo 캐시에서 좌표 주입
     apartments = candidates[:]
     apartments.sort(key=lambda x: x["price"], reverse=True)
+    for apt in apartments:
+        geo = _geo_cache.get(apt["key"])
+        if geo:
+            apt["lat"] = geo["lat"]
+            apt["lng"] = geo["lng"]
+
     _cache["apartments"][district] = apartments
-    logger.info(f"[{district}] 마커: {len(apartments)}개")
+    logger.info(f"[{district}] 마커: {len(apartments)}개 (좌표캐시: {sum(1 for a in apartments if 'lat' in a)}개)")
     return {"apartments": apartments, "cached": False}
+
+
+@app.post("/api/geocache")
+async def update_geocache(request: Request):
+    """클라이언트가 지오코딩한 좌표를 서버에 저장"""
+    data = await request.json()
+    key = (data.get("key") or "").strip()
+    lat, lng = data.get("lat"), data.get("lng")
+    if key and lat and lng:
+        _geo_cache[key] = {"lat": float(lat), "lng": float(lng)}
+        _save_geo_cache()
+    return {"ok": True}
 
 
 @app.delete("/api/cache")

@@ -6,7 +6,10 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>아파트 실거래가</title>
+  <title>바나의 아파트 실거래가</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="manifest" href="/static/manifest.json">
   <!-- document.write 가로채기:
        Naver SDK가 geocoder를 document.write로 주입하면 Chrome이 차단함.
        미리 가로채서 동적 <script> 삽입으로 교체. -->
@@ -42,7 +45,7 @@
       --border: #e5e7eb;
       --header-h: 52px;
       --filter-h: 36px;
-      --tab-h: 48px;
+      --tab-h: 0px;
     }
 
     html, body { width: 100%; height: 100%; overflow: hidden; }
@@ -85,6 +88,23 @@
       letter-spacing: -.3px;
     }
     #header-logo span { color: var(--blue); }
+
+    /* ── 지역 탭 (서울/경기/인천) ── */
+    #region-tabs { display: flex; gap: 3px; flex-shrink: 0; }
+    .rtab {
+      padding: 4px 9px;
+      border-radius: 7px;
+      border: none;
+      background: #f3f4f6;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--gray);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: background .1s, color .1s;
+    }
+    .rtab.active { background: var(--blue); color: #fff; }
+
     #district-scroll {
       flex: 1;
       display: flex;
@@ -250,7 +270,7 @@
       z-index: 700;
       transform: translateY(100%);
       transition: transform .3s cubic-bezier(.32,1,.32,1);
-      max-height: 70vh;
+      max-height: 88vh;
       display: flex;
       flex-direction: column;
     }
@@ -339,11 +359,63 @@
     }
     /* ── 차트 영역 ── */
     #sheet-chart-wrap {
-      padding: 12px 16px 4px;
+      padding: 8px 16px 6px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
     #sheet-chart-wrap canvas { width: 100% !important; }
+
+    /* 기간 탭 */
+    #chart-period-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .period-tab {
+      flex: 1;
+      padding: 5px 0;
+      border: none;
+      background: none;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--gray);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .period-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+    /* 요약 배너 */
+    #chart-summary {
+      background: #b8cafb;
+      border-radius: 6px;
+      padding: 5px 10px;
+      margin-bottom: 6px;
+      font-size: 11px;
+      color: #9ca3af;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    #chart-summary.visible { display: flex; }
+    #chart-summary .sum-range { color: #010814; font-size: 11px; }
+    #chart-summary .sum-change { margin-left: auto; font-weight: 700; font-size: 12px; }
+    .sum-up   { color: #f87171; }
+    .sum-down { color: #34d399; }
+    .sum-flat { color: #9ca3af; }
+
+    /* 차트 하단 통계 */
+    #chart-stats {
+      display: flex;
+      gap: 10px;
+      padding: 4px 2px 0;
+      font-size: 11px;
+      color: var(--gray);
+    }
+    #chart-stats .stat-item { white-space: nowrap; }
     #sheet-trades {
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
@@ -472,6 +544,32 @@
     .tab-btn.active { color: var(--blue); }
     .tab-icon { font-size: 20px; line-height: 1; }
 
+    /* ── 구 클러스터 마커 ── */
+    .district-tag {
+      background: #2563eb;
+      backdrop-filter: blur(4px);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 8px 16px;
+      border-radius: 22px;
+      white-space: nowrap;
+      cursor: pointer;
+      box-shadow: 0 3px 10px rgba(0,0,0,.3);
+      -webkit-tap-highlight-color: transparent;
+      transition: background .15s;
+      line-height: 1.3;
+      text-align: center;
+    }
+    .district-tag:active { background: var(--blue); }
+    .district-tag .dt-count {
+      display: block;
+      font-size: 10px;
+      font-weight: 400;
+      opacity: .75;
+      margin-top: 1px;
+    }
+
     /* ── 단지 수 뱃지 ── */
     #count-badge {
       position: fixed;
@@ -496,15 +594,20 @@
 <!-- 헤더 -->
 <div id="header">
   <div id="header-logo">아파트 <span>실거래</span></div>
+  <div id="region-tabs">
+    <button class="rtab active" data-region="서울">서울</button>
+    <button class="rtab" data-region="경기">경기</button>
+    <button class="rtab" data-region="인천">인천</button>
+  </div>
   <div id="district-scroll"></div>
 </div>
 
 <!-- 세대수 필터 (거래량 기반 추정) -->
 <div id="filter-scroll">
   <button class="filter-chip" data-min="0">전체</button>
-  <button class="filter-chip active" data-min="20">300세대+</button>
-  <button class="filter-chip" data-min="40">500세대+</button>
-  <button class="filter-chip" data-min="80">1000세대+</button>
+  <button class="filter-chip" data-min="10">300세대+</button>
+  <button class="filter-chip active" data-min="20">500세대+</button>
+  <button class="filter-chip" data-min="30">1000세대+</button>
 </div>
 
 <!-- 지도 -->
@@ -541,50 +644,100 @@
   </div>
   <!-- 가격 추이 차트 -->
   <div id="sheet-chart-wrap">
-    <canvas id="sheet-chart" height="120"></canvas>
+    <div id="chart-summary"></div>
+    <canvas id="sheet-chart" height="90"></canvas>
+    <div id="chart-stats"></div>
   </div>
   <div id="sheet-trades"></div>
 </div>
 
-<!-- 하단 탭 -->
-<div id="tabbar">
-  <button class="tab-btn active" id="tab-map">
-    <span class="tab-icon">🗺️</span>지도
-  </button>
-  <button class="tab-btn" id="tab-refresh" onclick="refreshData()">
-    <span class="tab-icon">🔄</span>새로고침
-  </button>
-</div>
 
 <script>
 // 네이버 지도 키 (.env → 서버 → 템플릿 변수로 주입됨)
 const NAVER_CLIENT_ID = '{{ naver_maps_key }}';
-const DISTRICTS = [
-  '강남구','서초구','송파구','강동구','마포구','용산구','성동구','광진구',
-  '노원구','도봉구','강북구','은평구','서대문구','종로구','중구',
-  '동대문구','중랑구','성북구','강서구','양천구','구로구','영등포구',
-  '동작구','관악구','금천구'
-];
+// ── 지역별 데이터 ────────────────────────────────────────────
+const REGION_DATA = {
+  '서울': {
+    mapCenter: [37.5665, 126.9780], clusterZoom: 11,
+    districts: ['강남구','서초구','송파구','강동구','마포구','용산구','성동구','광진구',
+                '노원구','도봉구','강북구','은평구','서대문구','종로구','중구',
+                '동대문구','중랑구','성북구','강서구','양천구','구로구','영등포구',
+                '동작구','관악구','금천구'],
+    centers: {
+      '강남구':[37.5172,127.0473],'서초구':[37.4837,127.0324],'송파구':[37.5145,127.1059],
+      '강동구':[37.5301,127.1238],'마포구':[37.5638,126.9084],'용산구':[37.5384,126.9654],
+      '성동구':[37.5634,127.0369],'광진구':[37.5385,127.0823],'노원구':[37.6541,127.0568],
+      '도봉구':[37.6688,127.0471],'강북구':[37.6396,127.0257],'은평구':[37.6027,126.9291],
+      '서대문구':[37.5791,126.9368],'종로구':[37.5735,126.9790],'중구':[37.5641,126.9979],
+      '동대문구':[37.5744,127.0396],'중랑구':[37.6063,127.0927],'성북구':[37.5894,127.0167],
+      '강서구':[37.5509,126.8495],'양천구':[37.5170,126.8664],'구로구':[37.4954,126.8874],
+      '영등포구':[37.5264,126.8963],'동작구':[37.5124,126.9393],'관악구':[37.4784,126.9516],
+      '금천구':[37.4601,126.9001],
+    },
+  },
+  '경기': {
+    mapCenter: [37.4138, 127.5183], clusterZoom: 9,
+    districts: ['수원시','성남시','고양시','용인시','부천시','안산시','안양시','남양주시',
+                '화성시','평택시','의정부시','시흥시','파주시','광명시','하남시','김포시',
+                '광주시','군포시','오산시','이천시','양주시','안성시','구리시','의왕시',
+                '포천시','여주시','동두천시','과천시','연천군','가평군','양평군'],
+    centers: {
+      '수원시':[37.2636,127.0286],'성남시':[37.4201,127.1267],'고양시':[37.6584,126.8320],
+      '용인시':[37.2411,127.1776],'부천시':[37.5036,126.7660],'안산시':[37.3219,126.8309],
+      '안양시':[37.3943,126.9568],'남양주시':[37.6360,127.2160],'화성시':[37.1996,126.8312],
+      '평택시':[36.9921,127.1128],'의정부시':[37.7382,127.0337],'시흥시':[37.3800,126.8026],
+      '파주시':[37.7601,126.7801],'광명시':[37.4789,126.8644],'하남시':[37.5391,127.2148],
+      '김포시':[37.6154,126.7156],'광주시':[37.4296,127.2553],'군포시':[37.3615,126.9352],
+      '오산시':[37.1498,127.0773],'이천시':[37.2720,127.4348],'양주시':[37.7850,127.0460],
+      '안성시':[37.0080,127.2798],'구리시':[37.5943,127.1298],'의왕시':[37.3447,126.9685],
+      '포천시':[37.8948,127.2002],'여주시':[37.2982,127.6375],'동두천시':[37.9035,127.0609],
+      '과천시':[37.4292,126.9878],'연천군':[38.0964,127.0749],'가평군':[37.8314,127.5108],
+      '양평군':[37.4914,127.4875],
+    },
+  },
+  '인천': {
+    mapCenter: [37.4563, 126.7052], clusterZoom: 10,
+    districts: ['인천중구','인천동구','미추홀구','연수구','남동구','부평구','계양구','인천서구','강화군','옹진군'],
+    centers: {
+      '인천중구':[37.4738,126.6214],'인천동구':[37.4740,126.6438],'미추홀구':[37.4636,126.6503],
+      '연수구':[37.4104,126.6780],'남동구':[37.4472,126.7310],'부평구':[37.5088,126.7222],
+      '계양구':[37.5377,126.7378],'인천서구':[37.5450,126.6761],
+      '강화군':[37.7476,126.4877],'옹진군':[37.4469,126.4152],
+    },
+  },
+};
+
+// 전체 DISTRICT_CENTERS (클러스터 마커용)
+const DISTRICT_CENTERS = Object.values(REGION_DATA)
+  .reduce((acc, r) => Object.assign(acc, r.centers), {});
+
+const ZOOM_CLUSTER = 13; // 이 줌 미만: 구 클러스터, 이상: 단지 마커
 
 let map = null;
 let markers = [];
 let activeMarkerEl = null;
+let currentRegion = '서울';
 let currentDistrict = '강남구';
 let isBusy = false;
 let allApartments = [];  // 전체 데이터 보관 (필터 재적용용)
-let minTradeFilter = 20;  // 기본: 300세대+ 추정 (12개월 거래 20건 이상)
+let minTradeFilter = 10;  // 기본: 300세대+ 추정 (12개월 거래 10건 이상)
+let allGeocodedApts = []; // 지오코딩 완료된 {apt, pos} 전체 목록
+let activeAptKey = null;  // 현재 열린 시트의 apt key
 
 // ── 지도 초기화 ────────────────────────────────────────────
 function initMap() {
   map = new naver.maps.Map('map', {
     center: new naver.maps.LatLng(37.5665, 126.9780),
-    zoom: 13,
+    zoom: 16,
     zoomControl: false,
     scaleControl: false,
     logoControl: false,
     mapDataControl: false,
   });
   naver.maps.Event.addListener(map, 'click', closeSheet);
+  naver.maps.Event.addListener(map, 'idle', () => {
+    updateVisibleMarkers();
+  });
 }
 
 // ── 세대수 필터 ────────────────────────────────────────────
@@ -603,18 +756,47 @@ function buildFilterBar() {
 }
 
 function applyFilterAndRender(district) {
+  allGeocodedApts = [];
   const filtered = allApartments.filter(a => a.total_trades >= minTradeFilter);
   if (!filtered.length) {
     showBadge(`${district} · 조건에 맞는 단지 없음`);
     return;
   }
+  // 필터된 단지 중 최고가를 대장으로 재지정
+  const maxPrice = Math.max(...filtered.map(a => a.price));
+  filtered.forEach(a => { a.is_champion = (a.price === maxPrice); });
   renderMarkers(filtered, district);
 }
 
-// ── 구 선택 탭 ─────────────────────────────────────────────
+// ── 지역 탭 이벤트 ──────────────────────────────────────────
+function buildRegionTabs() {
+  document.querySelectorAll('.rtab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.region === currentRegion) return;
+      document.querySelectorAll('.rtab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentRegion = btn.dataset.region;
+      const r = REGION_DATA[currentRegion];
+      // 첫 번째 도시로 자동 선택
+      currentDistrict = r.districts[0];
+      buildDistrictBar();
+      const center = r.centers[currentDistrict] || r.mapCenter;
+      map.setCenter(new naver.maps.LatLng(center[0], center[1]));
+      map.setZoom(r.clusterZoom + 3);
+      closeSheet();
+      clearMarkers();
+      allGeocodedApts = [];
+      loadApartments(currentDistrict);
+    });
+  });
+}
+
+// ── 구/시 선택 칩 ───────────────────────────────────────────
 function buildDistrictBar() {
   const bar = document.getElementById('district-scroll');
-  DISTRICTS.forEach(name => {
+  bar.innerHTML = '';
+  const districts = REGION_DATA[currentRegion].districts;
+  districts.forEach(name => {
     const btn = document.createElement('button');
     btn.className = 'dist-chip' + (name === currentDistrict ? ' active' : '');
     btn.textContent = name;
@@ -674,8 +856,27 @@ function waitForGeocoder(timeout = 10000) {
   });
 }
 
-// ── 네이버 geocoder로 주소 → 좌표 변환 (8초 timeout) ─────
+// ── 지오코딩 localStorage 캐시 ────────────────────────────
+const GEO_CACHE_KEY = 'apt_geo_v1';
+let _geoCache = null;
+function getGeoCache() {
+  if (!_geoCache) {
+    try { _geoCache = JSON.parse(localStorage.getItem(GEO_CACHE_KEY) || '{}'); }
+    catch { _geoCache = {}; }
+  }
+  return _geoCache;
+}
+function saveGeoCache(query, lat, lng) {
+  const c = getGeoCache();
+  c[query] = { lat, lng };
+  try { localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(c)); } catch {}
+}
+
+// ── 네이버 geocoder로 주소 → 좌표 변환 (캐시 우선) ────────
 function geocodeAddress(query) {
+  const cached = getGeoCache()[query];
+  if (cached) return Promise.resolve(new naver.maps.LatLng(cached.lat, cached.lng));
+
   return new Promise(resolve => {
     if (!window.naver?.maps?.Service?.geocode) { resolve(null); return; }
     const timer = setTimeout(() => resolve(null), 8000);
@@ -686,43 +887,135 @@ function geocodeAddress(query) {
         return;
       }
       const { x, y } = res.v2.addresses[0];
+      saveGeoCache(query, parseFloat(y), parseFloat(x));
       resolve(new naver.maps.LatLng(parseFloat(y), parseFloat(x)));
     });
   });
 }
 
-// ── 마커 렌더 — 네이버 geocoder로 좌표 획득 ─────────────────
+// 지역별 행정 prefix & 인천 표시명 → 실제 주소명 매핑
+const REGION_PREFIX = { '서울': '서울특별시', '경기': '경기도', '인천': '인천광역시' };
+const DISTRICT_GEO_NAME = { '인천중구': '중구', '인천동구': '동구', '인천서구': '서구' };
+
+// ── 단지 지오코딩 (서버 캐시 우선 → Naver geocoder fallback) ─
+async function geocodeApt(apt) {
+  // 서버 캐시에 좌표 있으면 즉시 반환 (지오코딩 생략)
+  if (apt.lat && apt.lng) return new naver.maps.LatLng(apt.lat, apt.lng);
+
+  const pref = REGION_PREFIX[apt.region || currentRegion] || '서울특별시';
+  const dist = DISTRICT_GEO_NAME[apt.district] || apt.district;
+
+  let pos = await geocodeAddress(`${pref} ${dist} ${apt.dong} ${apt.jibun}`);
+  if (!pos) pos = await geocodeAddress(`${pref} ${dist} ${apt.dong} ${apt.name}`);
+  if (!pos) pos = await geocodeAddress(`${pref} ${dist} ${apt.name}`);
+
+  // 성공 시 서버에 저장 (fire-and-forget)
+  if (pos) {
+    fetch('/api/geocache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: apt.key, lat: pos.lat(), lng: pos.lng() })
+    }).catch(() => {});
+  }
+
+  return pos;
+}
+
+// ── 마커 렌더 — 지오코딩 후 viewport 기반 표시 ──────────────
 async function renderMarkers(apts, district) {
   if (!map) { console.error('지도 미초기화'); return; }
 
-  const bounds = new naver.maps.LatLngBounds();
-  let placed = 0;
+  allGeocodedApts = [];
 
-  // 5개씩 병렬 지오코딩
-  for (let i = 0; i < apts.length; i += 5) {
-    const batch = apts.slice(i, i + 5);
-    const results = await Promise.all(batch.map(apt => {
-      const query = `서울특별시 ${apt.district} ${apt.dong} ${apt.jibun}`;
-      return geocodeAddress(query);
-    }));
+  // 8개씩 병렬 지오코딩 — 결과를 allGeocodedApts에 모두 수집
+  for (let i = 0; i < apts.length; i += 8) {
+    const batch = apts.slice(i, i + 8);
+    const results = await Promise.all(batch.map(apt => geocodeApt(apt)));
 
     results.forEach((pos, idx) => {
       if (!pos) return;
-      bounds.extend(pos);
-      placeMarker(batch[idx], pos);
-      placed++;
+      allGeocodedApts.push({ apt: batch[idx], pos });
     });
 
-    setLoading(true, `${district} 위치 조회 중...`, `${Math.min(i + 5, apts.length)} / ${apts.length}`);
+    setLoading(true, `${district} 위치 조회 중...`, `${Math.min(i + 8, apts.length)} / ${apts.length}`);
   }
 
-  if (!placed) {
-    showBadge(`${district} · 위치 데이터 없음`);
-  } else {
-    map.fitBounds(bounds, { top: 70, right: 20, bottom: 80, left: 20 });
-    showBadge(`${district} · ${placed}개 단지`);
-  }
   setLoading(false);
+
+  if (!allGeocodedApts.length) {
+    showBadge(`${district} · 위치 데이터 없음`);
+    return;
+  }
+
+  // 구 중심점으로 이동, zoom 16 고정
+  const lats = allGeocodedApts.map(({ pos }) => pos.lat());
+  const lngs = allGeocodedApts.map(({ pos }) => pos.lng());
+  const cLat = lats.reduce((a, b) => a + b) / lats.length;
+  const cLng = lngs.reduce((a, b) => a + b) / lngs.length;
+  map.setCenter(new naver.maps.LatLng(cLat, cLng));
+  map.setZoom(16);
+
+  updateVisibleMarkers();
+}
+
+// ── 줌 레벨에 따라 구 클러스터 or 단지 마커 표시 ─────────────
+function updateVisibleMarkers() {
+  if (map.getZoom() < ZOOM_CLUSTER) {
+    showDistrictMarkers();
+  } else if (allGeocodedApts.length) {
+    showAptMarkers();
+  }
+}
+
+function showAptMarkers() {
+  clearMarkers();
+  const bounds = map.getBounds();
+  let count = 0;
+  allGeocodedApts.forEach(({ apt, pos }) => {
+    if (!bounds.hasPoint(pos)) return;
+    placeMarker(apt, pos);
+    count++;
+  });
+  showBadge(`${currentDistrict} · ${count}개 단지`);
+}
+
+function showDistrictMarkers() {
+  clearMarkers();
+  closeSheet();
+  const bounds = map.getBounds();
+  REGION_DATA[currentRegion].districts.forEach(name => {
+    const center = DISTRICT_CENTERS[name];
+    if (!center) return;
+    const pos = new naver.maps.LatLng(center[0], center[1]);
+    if (!bounds.hasPoint(pos)) return;
+
+    const el = document.createElement('div');
+    el.className = 'district-tag';
+    el.innerHTML = `${name}`;
+
+    const marker = new naver.maps.Marker({
+      position: pos,
+      map,
+      icon: { content: el, anchor: new naver.maps.Point(40, 20) },
+      zIndex: 100,
+    });
+
+    naver.maps.Event.addListener(marker, 'click', () => {
+      const [lat, lng] = DISTRICT_CENTERS[name];
+      map.setCenter(new naver.maps.LatLng(lat, lng));
+      map.setZoom(15);
+      if (name !== currentDistrict) {
+        currentDistrict = name;
+        document.querySelectorAll('.dist-chip').forEach(b =>
+          b.classList.toggle('active', b.textContent === name));
+        closeSheet();
+        loadApartments(name);
+      }
+    });
+
+    markers.push(marker);
+  });
+  showBadge('서울시 · 구를 선택하세요');
 }
 
 // ── 마커 배치 ──────────────────────────────────────────────
@@ -746,6 +1039,7 @@ function placeMarker(apt, pos) {
     if (activeMarkerEl) activeMarkerEl.classList.remove('active');
     el.classList.add('active');
     activeMarkerEl = el;
+    activeAptKey = apt.key;
     openSheet(apt);
   });
 
@@ -756,6 +1050,7 @@ function clearMarkers() {
   markers.forEach(m => m.setMap(null));
   markers = [];
   activeMarkerEl = null;
+  // activeAptKey는 유지 — viewport 업데이트 후 같은 마커 재활성화
 }
 
 // ── 하단 시트 ──────────────────────────────────────────────
@@ -767,6 +1062,7 @@ function openSheet(apt) {
   document.getElementById('sheet-name').textContent = apt.name;
   const built = apt.built_year ? `${apt.built_year}년 · ` : '';
   document.getElementById('sheet-meta').textContent = `${built}${apt.dong}`;
+
 
   // 동 평균 비교
   const cmp = document.getElementById('sheet-dong-compare');
@@ -788,13 +1084,16 @@ function openSheet(apt) {
   // 평형 드롭다운 구성 — 34평(84㎡) 우선 선택
   const sel = document.getElementById('sheet-area-select');
   sel.innerHTML = '';
-  const preferredKeys = [84, 85, 83, 59, 60, 58]; // 34평 → 25평 우선순위
+  const preferredSizes = [84, 59]; // 34평 → 25평 우선순위
   const types = apt.area_types || [];
   let defaultIdx = 0;
-  for (const pref of preferredKeys) {
-    const found = types.findIndex(t => t.area_key === pref);
-    if (found !== -1) { defaultIdx = found; break; }
-  }
+  let bestDist = Infinity;
+  types.forEach((t, i) => {
+    for (const pref of preferredSizes) {
+      const dist = Math.abs(t.area_key - pref);
+      if (dist < bestDist) { bestDist = dist; defaultIdx = i; }
+    }
+  });
   types.forEach((at, i) => {
     const opt = document.createElement('option');
     opt.value = i;
@@ -816,9 +1115,9 @@ function renderSheetArea(apt, idx) {
   document.getElementById('sheet-price').textContent = at.latest_price_display;
   document.getElementById('sheet-price-date').textContent = at.latest_date;
 
-  // 차트 — 매매 거래만, 날짜 오름차순
-  const saleTrades = at.trades.filter(t => t.trade_type === '매매').reverse();
-  renderChart(saleTrades);
+  // 차트
+  currentChartTrades = at.trades;
+  renderChart(at.trades);
 
   // 거래 테이블
   const tradesEl = document.getElementById('sheet-trades');
@@ -840,7 +1139,7 @@ function renderSheetArea(apt, idx) {
       </thead>
       <tbody>
         ${at.trades.map(t => {
-          const dongFloor = [t.apt_dong, t.floor ? t.floor + '층' : ''].filter(Boolean).join(' ');
+          const dongFloor = [t.apt_dong ? t.apt_dong + '동' : '', t.floor ? t.floor + '층' : ''].filter(Boolean).join(' ');
           return `
             <tr>
               <td class="col-ym">${t.year_month}</td>
@@ -857,60 +1156,178 @@ function renderSheetArea(apt, idx) {
   `;
 }
 
-function renderChart(saleTrades) {
-  const canvas = document.getElementById('sheet-chart');
-  const wrap = document.getElementById('sheet-chart-wrap');
+// ── 차트 상태 ──────────────────────────────────────────────
+let currentChartTrades = [];
 
+function tradeFullYear(ym) {
+  const yr2 = parseInt((ym || '').split('.')[0]);
+  return yr2 <= 30 ? 2000 + yr2 : 1900 + yr2;
+}
+
+function fmtPrice(v) {
+  if (!v) return '-';
+  const eok = Math.floor(v / 10000);
+  const rem = v % 10000;
+  return eok && rem ? `${eok}억 ${rem.toLocaleString()}만` : eok ? `${eok}억` : `${v.toLocaleString()}만`;
+}
+
+function parseTradeDate(t) {
+  const yr  = tradeFullYear(t.year_month);
+  const mo  = parseInt((t.year_month || '').split('.')[1] || '1') - 1;
+  const day = parseInt(t.day) || 1;
+  return new Date(yr, mo, day);
+}
+
+// 180일 이동평균 계산
+function calc180DayMA(trades) {
+  const MS_180 = 180 * 24 * 60 * 60 * 1000;
+  return trades.map((t, i) => {
+    const d = parseTradeDate(t);
+    const cutoff = d.getTime() - MS_180;
+    const window = trades.filter((tr, j) => {
+      if (j > i) return false;
+      return parseTradeDate(tr).getTime() >= cutoff;
+    });
+    if (!window.length) return null;
+    const avg = window.reduce((s, tr) => s + (tr.price || 0), 0) / window.length;
+    return Math.round(avg);
+  });
+}
+
+function renderChart(allTrades) {
+  const canvas = document.getElementById('sheet-chart');
+  const wrap   = document.getElementById('sheet-chart-wrap');
   if (sheetChart) { sheetChart.destroy(); sheetChart = null; }
 
-  if (!saleTrades.length) {
+  // 매매만, 날짜 오름차순
+  let trades = allTrades.filter(t => t.trade_type === '매매').reverse();
+
+  const summaryEl = document.getElementById('chart-summary');
+  const statsEl   = document.getElementById('chart-stats');
+
+  if (!trades.length) {
     wrap.style.display = 'none';
+    summaryEl.classList.remove('visible');
+    statsEl.innerHTML = '';
     return;
   }
   wrap.style.display = 'block';
 
-  const labels = saleTrades.map(t => `${t.year_month}.${t.day}`);
-  const prices = saleTrades.map(t => t.price || 0);
+  const prices = trades.map(t => t.price || 0);
+
+  // 요약 배너
+  const first = trades[0], last = trades[trades.length - 1];
+  const firstY  = tradeFullYear(first.year_month), lastY = tradeFullYear(last.year_month);
+  const firstMo = (first.year_month || '').split('.')[1] || '?';
+  const lastMo  = (last.year_month  || '').split('.')[1] || '?';
+  const totalMonths = (lastY - firstY) * 12 + (parseInt(lastMo) - parseInt(firstMo));
+  const durTxt = totalMonths >= 12
+    ? `${Math.floor(totalMonths/12)}년 ${totalMonths%12 ? totalMonths%12+'개월' : ''}`
+    : `${Math.max(totalMonths, 1)}개월`;
+  const priceDiff = last.price - first.price;
+  const pct  = first.price ? ((priceDiff / first.price) * 100).toFixed(1) : 0;
+  const cls  = priceDiff > 0 ? 'sum-up' : priceDiff < 0 ? 'sum-down' : 'sum-flat';
+  const sign = priceDiff > 0 ? '+' : '';
+  summaryEl.innerHTML = `
+    <span class="sum-range">${firstY}.${firstMo} ~ ${lastY}.${lastMo} (${durTxt.trim()})</span>
+    <span class="sum-change ${cls}">${sign}${fmtPrice(Math.abs(priceDiff))} (${sign}${pct}%)</span>
+  `;
+  summaryEl.classList.add('visible');
+
+  // 최고/최저
+  const maxVal = Math.max(...prices), minVal = Math.min(...prices);
+  const maxIdx = prices.indexOf(maxVal), minIdx = prices.indexOf(minVal);
+
+  const pointColors = prices.map((_, i) =>
+    i === maxIdx ? '#ef4444' : i === minIdx ? '#3b82f6' : '#6366f1');
+  const pointRadii = prices.map((_, i) =>
+    i === maxIdx || i === minIdx ? 5 : 2.5);
+
+  // 180일선
+  const maData = calc180DayMA(trades);
+
+  // 최고/최저 라벨 플러그인
+  const minMaxPlugin = {
+    id: 'minmaxlabel',
+    afterDatasetDraw(chart, args) {
+      if (args.index !== 0) return;
+      const ds  = chart.getDatasetMeta(0);
+      const ctx = chart.ctx;
+      ctx.save();
+      [{ idx: maxIdx, label: '최고', color: '#ef4444', above: true },
+       { idx: minIdx, label: '최저', color: '#3b82f6', above: false }].forEach(({ idx, label, color, above }) => {
+        const pt = ds.data[idx];
+        if (!pt) return;
+        ctx.font = 'bold 10px -apple-system,sans-serif';
+        ctx.fillStyle = color;
+        ctx.textAlign = 'center';
+        ctx.fillText(label, pt.x, above ? pt.y - 8 : pt.y + 16);
+      });
+      ctx.restore();
+    }
+  };
 
   sheetChart = new Chart(canvas, {
     type: 'line',
+    plugins: [minMaxPlugin],
     data: {
-      labels,
-      datasets: [{
-        data: prices,
-        borderColor: '#2563eb',
-        backgroundColor: 'rgba(37,99,235,0.08)',
-        borderWidth: 2,
-        pointRadius: 3,
-        pointBackgroundColor: '#2563eb',
-        tension: 0.3,
-        fill: true,
-      }]
+      labels: trades.map(t => `${t.year_month}.${t.day}`),
+      datasets: [
+        {
+          label: '매매가',
+          data: prices,
+          borderColor: '#6366f1',
+          backgroundColor: 'rgba(239,68,68,0.08)',
+          borderWidth: 2,
+          pointRadius: pointRadii,
+          pointBackgroundColor: pointColors,
+          tension: 0.3,
+          fill: true,
+          order: 2,
+        },
+        {
+          label: '180일선',
+          data: maData,
+          borderColor: '#f59e0b',
+          borderWidth: 1.5,
+          borderDash: [5, 3],
+          pointRadius: 0,
+          tension: 0.4,
+          fill: false,
+          order: 1,
+        }
+      ]
     },
     options: {
       responsive: true,
-      plugins: { legend: { display: false }, tooltip: {
-        callbacks: {
-          label: ctx => {
-            const v = ctx.raw;
-            const eok = Math.floor(v / 10000);
-            const rem = v % 10000;
-            return eok && rem ? `${eok}억 ${rem.toLocaleString()}만` : eok ? `${eok}억` : `${v.toLocaleString()}만`;
+      layout: { padding: { top: 14 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${fmtPrice(ctx.raw)}`
           }
         }
-      }},
+      },
       scales: {
         x: { ticks: { font: { size: 10 }, maxTicksLimit: 6 }, grid: { display: false } },
         y: {
-          min: prices.length ? Math.max(0, Math.min(...prices) - 100000) : undefined,
+          min: Math.max(0, minVal - Math.round((maxVal - minVal) * 0.2 + 3000)),
           ticks: { font: { size: 10 }, callback: v => {
-            const e = Math.floor(v/10000); return e ? `${e}억` : `${v/1000}천`;
+            const e = Math.floor(v / 10000); return e ? `${e}억` : `${v/1000}천`;
           }},
           grid: { color: '#f3f4f6' }
         }
       }
     }
   });
+
+  statsEl.innerHTML = `
+    <span class="stat-item">실거래 ${trades.length}건</span>
+    <span class="stat-item">최고 ${fmtPrice(maxVal)}</span>
+    <span class="stat-item">최저 ${fmtPrice(minVal)}</span>
+    <span class="stat-item" style="color:#f59e0b">━ 180일선</span>
+  `;
 }
 
 function closeSheet() {
@@ -941,14 +1358,20 @@ function refreshData() {
     .then(() => loadApartments(currentDistrict));
 }
 
-// ── 바텀시트 스와이프 닫기 ─────────────────────────────────
+// ── 바텀시트 스와이프 닫기 (핸들 영역만) ──────────────────
 (function initSwipe() {
-  const sheet = document.getElementById('sheet');
+  const handle = document.getElementById('sheet-handle');
   let startY = 0;
-  sheet.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
-  sheet.addEventListener('touchend', e => {
+  let dragging = false;
+  handle.addEventListener('touchstart', e => {
+    startY = e.touches[0].clientY;
+    dragging = true;
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (!dragging) return;
+    dragging = false;
     const dy = e.changedTouches[0].clientY - startY;
-    if (dy > 60) closeSheet();
+    if (dy > 40) closeSheet();
   }, { passive: true });
 })();
 
@@ -957,6 +1380,7 @@ document.getElementById('sheet-close').addEventListener('click', closeSheet);
 
 async function startApp() {
   initMap();
+  buildRegionTabs();
   buildDistrictBar();
   buildFilterBar();
   // geocoder가 비동기로 로드되므로 준비될 때까지 대기
