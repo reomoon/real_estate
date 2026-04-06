@@ -366,10 +366,13 @@ async def get_apartments(district: str = Query(default="강남구")):
                         price_str = format_price(deposit)
                     p = deposit
 
-                # 정보: 계약갱신청구권(cdealType) 또는 거래유형(dealingGbn)
+                # 정보: 계약취소(cdealType=O) 또는 거래유형(dealingGbn)
                 cdeal = (t.get("cdealType") or "").strip()
                 dealing = (t.get("dealingGbn") or "").strip()
-                info = cdeal if cdeal else dealing
+                if cdeal == "O":
+                    info = "취소"
+                else:
+                    info = cdeal if cdeal else dealing
 
                 trade_history.append({
                     "year_month": f"{ty}.{tmo}",
