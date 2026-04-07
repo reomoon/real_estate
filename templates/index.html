@@ -209,22 +209,56 @@
       z-index: 490;
     }
     #filter-scroll::-webkit-scrollbar { display: none; }
-    .filter-chip {
+    #apt-filter {
+      position: relative;
       flex-shrink: 0;
+    }
+    #btn-household {
       padding: 4px 10px;
       border-radius: 20px;
       border: 1.5px solid var(--border);
       background: #fff;
       font-size: 12px;
-      font-weight: 500;
+      font-weight: 700;
       color: #374151;
       cursor: pointer;
       white-space: nowrap;
     }
-    .filter-chip.active {
-      background: #f5f3ff;
-      border-color: #6d28d9;
-      color: #6d28d9;
+    #btn-household.active {
+      background: #eff6ff;
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+    #household-panel {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      min-width: 128px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 10px 24px rgba(17,24,39,.12);
+      z-index: 520;
+    }
+    #household-panel.open { display: block; }
+    .household-option {
+      width: 100%;
+      padding: 8px 10px;
+      border: none;
+      border-radius: 10px;
+      background: transparent;
+      font-size: 12px;
+      font-weight: 600;
+      color: #374151;
+      text-align: left;
+      cursor: pointer;
+    }
+    .household-option:hover,
+    .household-option.active {
+      background: #eff6ff;
+      color: var(--blue);
     }
 
     /* ── 로딩 오버레이 ── */
@@ -329,20 +363,41 @@
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
-    #sheet-area-select {
-      width: 100%;
-      padding: 7px 10px;
-      border: 1.5px solid var(--border);
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--dark);
-      background: #f9fafb;
+    #sheet-area-list {
+      display: flex;
+      gap: 8px;
       margin-bottom: 8px;
-      appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 10px center;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    #sheet-area-list::-webkit-scrollbar { display: none; }
+    .sheet-area-btn {
+      flex-shrink: 0;
+      min-width: 176px;
+      padding: 9px 12px;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--dark);
+      text-align: left;
+      cursor: pointer;
+    }
+    .sheet-area-btn.active {
+      border-color: var(--blue);
+      background: #eff6ff;
+      box-shadow: inset 0 0 0 1px rgba(37,99,235,.06);
+    }
+    .sheet-area-main {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .sheet-area-sub {
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--gray);
+      line-height: 1.3;
     }
     #sheet-price-wrap {
       display: flex;
@@ -570,6 +625,15 @@
       opacity: .75;
       margin-top: 1px;
     }
+    .district-tag .kb-idx {
+      display: block;
+      font-size: 10px;
+      font-weight: 500;
+      opacity: .9;
+      margin-top: 2px;
+    }
+    .district-tag .kb-idx .kb-up   { color: #fca5a5; }
+    .district-tag .kb-idx .kb-down { color: #93c5fd; }
 
     /* ── 동 클러스터 마커 ── */
     .dong-tag {
@@ -596,6 +660,16 @@
       opacity: .65;
       margin-top: 1px;
     }
+    .dong-tag .kb-idx {
+      display: block;
+      font-size: 10px;
+      font-weight: 500;
+      color: #374151;
+      opacity: .85;
+      margin-top: 2px;
+    }
+    .dong-tag .kb-idx .kb-up   { color: #dc2626; }
+    .dong-tag .kb-idx .kb-down { color: #2563eb; }
 
     /* ── 내 위치 버튼 ── */
     #btn-my-location {
@@ -748,10 +822,14 @@
 
 <!-- 세대수 필터 (거래량 기반 추정) -->
 <div id="filter-scroll">
-  <button class="filter-chip" data-min="0">전체</button>
-  <button class="filter-chip" data-min="10">300세대+</button>
-  <button class="filter-chip active" data-min="20">500세대+</button>
-  <button class="filter-chip" data-min="30">1000세대+</button>
+  <div id="apt-filter">
+    <button id="btn-household" class="active" title="세대 기준 선택">300세대</button>
+    <div id="household-panel">
+      <button class="household-option active" data-min="10">300세대</button>
+      <button class="household-option" data-min="20">500세대</button>
+      <button class="household-option" data-min="30">1000세대</button>
+    </div>
+  </div>
   <div id="school-filter">
     <button id="btn-school" title="학군 보기">학군</button>
     <div id="school-panel">
@@ -794,7 +872,7 @@
   </div>
   <div id="sheet-price-row">
     <!-- 평형 드롭다운 -->
-    <select id="sheet-area-select"></select>
+    <div id="sheet-area-list"></div>
     <div id="sheet-price-wrap">
       <div id="sheet-price"></div>
       <div id="sheet-price-date"></div>
@@ -881,6 +959,7 @@ let _lastZoom   = -1;       // 마지막 처리 줌
 let currentRegion = '서울';
 let currentDistrict = '강남구';
 let allApartments = [];
+let kbIndexData = {}; // district_name → {index, change, date}
 let minTradeFilter = 10;
 let allGeocodedApts = [];
 let activeAptKey = null;
@@ -1007,9 +1086,44 @@ function closeSchoolPanel() {
   document.getElementById('school-panel').classList.remove('open');
 }
 
+function syncHouseholdFilterUI() {
+  const btn = document.getElementById('btn-household');
+  const options = document.querySelectorAll('.household-option');
+  options.forEach(option => {
+    option.classList.toggle('active', parseInt(option.dataset.min, 10) === minTradeFilter);
+  });
+  btn.classList.toggle('active', minTradeFilter === 10);
+  btn.textContent = minTradeFilter === 10 ? '300세대' : (minTradeFilter === 20 ? '500세대' : '1000세대');
+}
+
+function closeHouseholdPanel() {
+  document.getElementById('household-panel').classList.remove('open');
+}
+
+function positionHouseholdPanel() {
+  const btn = document.getElementById('btn-household');
+  const panel = document.getElementById('household-panel');
+  const rect = btn.getBoundingClientRect();
+  panel.style.top = `${rect.bottom + 8}px`;
+  panel.style.left = `${Math.max(12, rect.left)}px`;
+}
+
+function hideSchoolMarkers() {
+  schoolMarkers.forEach(m => m.setMap(null));
+  if (schoolInfoWindow) schoolInfoWindow.close();
+}
+
 document.getElementById('btn-school').addEventListener('click', (e) => {
   e.stopPropagation();
   const panel = document.getElementById('school-panel');
+  panel.classList.toggle('open');
+});
+
+document.getElementById('btn-household').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = document.getElementById('household-panel');
+  const willOpen = !panel.classList.contains('open');
+  if (willOpen) positionHouseholdPanel();
   panel.classList.toggle('open');
 });
 
@@ -1040,15 +1154,20 @@ document.getElementById('chk-high').addEventListener('change', (e) => {
 });
 
 document.addEventListener('click', (e) => {
-  if (!document.getElementById('school-filter').contains(e.target)) {
-    closeSchoolPanel();
-  }
+  if (!document.getElementById('school-filter').contains(e.target)) closeSchoolPanel();
+  if (!document.getElementById('apt-filter').contains(e.target)) closeHouseholdPanel();
+});
+
+window.addEventListener('resize', () => {
+  const panel = document.getElementById('household-panel');
+  if (panel.classList.contains('open')) positionHouseholdPanel();
 });
 
 async function loadSchoolMarkers() {
-  schoolMarkers.forEach(m => m.setMap(null));
+  hideSchoolMarkers();
   schoolMarkers = [];
   if (!currentDistrict || !window.naver?.maps?.Service) return;
+  if (map.getZoom() < ZOOM_CLUSTER) return;
   lastSchoolDistrict = currentDistrict;
   if (!schoolInfoWindow) {
     schoolInfoWindow = new naver.maps.InfoWindow({
@@ -1120,11 +1239,12 @@ async function loadSchoolMarkers() {
 
 // ── 세대수 필터 ────────────────────────────────────────────
 function buildFilterBar() {
-  document.querySelectorAll('.filter-chip').forEach(btn => {
+  syncHouseholdFilterUI();
+  document.querySelectorAll('.household-option').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      minTradeFilter = parseInt(btn.dataset.min);
+      minTradeFilter = parseInt(btn.dataset.min, 10);
+      syncHouseholdFilterUI();
+      closeHouseholdPanel();
       clearMarkers();
       closeSheet();
       updateGlobalAptPool();
@@ -1216,7 +1336,9 @@ function onMapIdle() {
     updateCurrentDistrict();
     updateHeaderLayout();
     updateVisibleMarkers();
-    if (schoolVisible && currentDistrict && currentDistrict !== lastSchoolDistrict) {
+    if (map.getZoom() < ZOOM_CLUSTER) {
+      hideSchoolMarkers();
+    } else if (schoolVisible && currentDistrict && currentDistrict !== lastSchoolDistrict) {
       loadSchoolMarkers();
     }
     // 줌인 상태(단지 마커 표시 레벨)일 때만 자동 로드
@@ -1332,7 +1454,8 @@ async function loadDistrictData(district) {
       const withCoords    = quickApts.filter(a => a.lat && a.lng);
       const withoutCoords = quickApts.filter(a => !a.lat || !a.lng);
       const geocoded = withCoords.map(a => ({ apt: a, pos: new naver.maps.LatLng(a.lat, a.lng) }));
-      districtMemCache[district] = { apts: quickApts, geocoded, pending: withoutCoords, full: false };
+      districtMemCache[district] = { apts: quickApts, geocoded, pending: withoutCoords, full: false,
+        monthly_trades: quickData.monthly_trades || {} };
       updateGlobalAptPool();
       updateVisibleMarkers();
       if (withoutCoords.length) geocodeBackground(district);
@@ -1369,7 +1492,8 @@ async function loadFullDistrict(district) {
     const existingKeys = new Set(mergedGeocoded.map(e => e.apt.key));
     geocoded.forEach(e => { if (!existingKeys.has(e.apt.key)) mergedGeocoded.push(e); });
 
-    districtMemCache[district] = { apts, geocoded: mergedGeocoded, pending: withoutCoords, full: true };
+    districtMemCache[district] = { apts, geocoded: mergedGeocoded, pending: withoutCoords, full: true,
+      monthly_trades: data.monthly_trades || districtMemCache[district]?.monthly_trades || {} };
     loadedDistricts.add(district);
 
     updateGlobalAptPool();
@@ -1540,7 +1664,7 @@ function showDongMarkers() {
     const marker = new naver.maps.Marker({
       position: pos,
       map,
-      icon: { content: el, anchor: new naver.maps.Point(40, 20) },
+      icon: { content: el, anchor: new naver.maps.Point(el.offsetWidth / 2 || 45, el.offsetHeight / 2 || 26) },
       zIndex: 100,
     });
 
@@ -1606,12 +1730,12 @@ function showDistrictMarkers() {
 
       const el = document.createElement('div');
       el.className = 'district-tag';
-      el.innerHTML = `${name}`;
+      el.innerHTML = `${name}${kbIndexHtml(name, true)}`;
 
       const marker = new naver.maps.Marker({
         position: pos,
         map,
-        icon: { content: el, anchor: new naver.maps.Point(40, 20) },
+        icon: { content: el, anchor: new naver.maps.Point(el.offsetWidth / 2 || 45, el.offsetHeight / 2 || 26) },
         zIndex: 100,
       });
 
@@ -1700,7 +1824,7 @@ async function openSheet(apt) {
   }
 
   // 로딩 상태 표시 후 시트 오픈
-  document.getElementById('sheet-area-select').innerHTML = '<option>불러오는 중...</option>';
+  document.getElementById('sheet-area-list').innerHTML = '<button class="sheet-area-btn active" type="button"><div class="sheet-area-main">불러오는 중...</div></button>';
   document.getElementById('sheet-price').textContent = '...';
   document.getElementById('sheet-price-date').textContent = '';
   document.getElementById('sheet-chart-wrap').style.visibility = 'hidden';
@@ -1724,8 +1848,8 @@ function renderSheetDetails(apt) {
   document.getElementById('sheet-chart-wrap').style.visibility = '';
 
   // 평형 드롭다운 구성 — 34평(84㎡) 우선 선택
-  const sel = document.getElementById('sheet-area-select');
-  sel.innerHTML = '';
+  const list = document.getElementById('sheet-area-list');
+  list.innerHTML = '';
   const preferredSizes = [84, 59];
   const types = apt.area_types || [];
   let defaultIdx = 0;
@@ -1737,19 +1861,26 @@ function renderSheetDetails(apt) {
     }
   });
   types.forEach((at, i) => {
-    const opt = document.createElement('option');
-    opt.value = i;
-    opt.textContent = `${at.label}  ·  최근 ${at.latest_price_display}  (${at.latest_date})`;
-    sel.appendChild(opt);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sheet-area-btn';
+    btn.dataset.idx = i;
+    btn.innerHTML = `
+      <div class="sheet-area-main">${at.label} · 최근 ${at.latest_price_display}</div>
+      <div class="sheet-area-sub">${at.latest_date}</div>
+    `;
+    btn.addEventListener('click', () => renderSheetArea(apt, i));
+    list.appendChild(btn);
   });
-  sel.value = defaultIdx;
-  sel.onchange = () => renderSheetArea(apt, parseInt(sel.value));
   renderSheetArea(apt, defaultIdx);
 }
 
 function renderSheetArea(apt, idx) {
   const at = (apt.area_types || [])[idx];
   if (!at) return;
+  document.querySelectorAll('.sheet-area-btn').forEach((btn, btnIdx) => {
+    btn.classList.toggle('active', btnIdx === idx);
+  });
 
   // 가격 표시
   document.getElementById('sheet-price').textContent = at.latest_price_display;
@@ -2131,11 +2262,41 @@ document.getElementById('sheet-trades').addEventListener('scroll', () => {
   }
 }, { passive: true });
 
+// ── KB 주간 아파트 가격 지수 로드 ────────────────────────────
+async function loadKbIndex() {
+  try {
+    const res = await fetch('/api/kb-index');
+    const data = await res.json();
+    kbIndexData = data.districts || {};
+  } catch (e) {
+    // KB 데이터 없어도 앱은 정상 동작
+  }
+}
+
+function kbIndexHtml(districtName) {
+  const info = kbIndexData[districtName];
+  if (!info || !info.index) return '';
+  const sign = info.change > 0 ? '▲' : info.change < 0 ? '▼' : '';
+  const cls  = info.change > 0 ? 'kb-up' : info.change < 0 ? 'kb-down' : '';
+  const abs  = Math.abs(info.change).toFixed(2);
+  const chg  = sign ? `<span class="${cls}">${sign}${abs}%</span>` : `${abs}%`;
+  return `<span class="kb-idx">KB지수 ${info.index.toFixed(2)} ${chg}</span>`;
+}
+
+function tradeVolumeHtml(districtName) {
+  const mt = districtMemCache[districtName]?.monthly_trades;
+  if (!mt || !Object.keys(mt).length) return '';
+  const entries = Object.entries(mt).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 3);
+  const parts = entries.map(([ym, cnt]) => `${parseInt(ym.slice(4))}월 ${cnt.toLocaleString()}건`);
+  return `<span class="kb-idx" style="opacity:.8">거래 ${parts.join(' ')}</span>`;
+}
+
 async function startApp() {
   initMap();
   buildRegionTabs();
   buildDistrictBar();
   buildFilterBar();
+  loadKbIndex(); // 백그라운드로 KB 지수 로드 (비차단)
 
   // GPS + geocoder 준비를 병렬로 처리
   const [gpsResult] = await Promise.all([

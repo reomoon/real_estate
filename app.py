@@ -72,7 +72,7 @@ DISTRICTS: dict[str, list[str]] = {
     "이천시":   ["41500"],
     "안성시":   ["41550"],
     "김포시":   ["41570"],
-    "화성시":   ["41590"],
+    "화성시":   ["41591","41593","41595","41597"],  # 2024.09 구 신설: 만세구/효행구/병점구/동탄구
     "광주시":   ["41610"],
     "양주시":   ["41630"],
     "포천시":   ["41650"],
@@ -323,7 +323,7 @@ async def get_apartments(
         apts = _cache["apartments"][district]
         if dong:
             apts = [a for a in apts if a.get("dong") == dong]
-        return {"apartments": apts, "cached": True, "full": True}
+        return {"apartments": apts, "cached": True, "full": True, "monthly_trades": {}}
 
     import asyncio
     lawd_codes = DISTRICTS[district]
@@ -342,7 +342,19 @@ async def get_apartments(
     logger.info(f"[{district}] 총 {len(all_raw)}건 (months={months})")
 
     if not all_raw:
-        return {"apartments": [], "cached": False, "full": not quick}
+        return {"apartments": [], "cached": False, "full": not quick, "monthly_trades": {}}
+
+    # 월별 매매 거래건수 집계 (구 전체)
+    from collections import Counter
+    _monthly_counter: Counter = Counter()
+    for _row in all_raw:
+        if _row.get("_type") == "매매":
+            _ym = f"{_row.get('dealYear','')}{str(_row.get('dealMonth','')).zfill(2)}"
+            if len(_ym) == 6:
+                _monthly_counter[_ym] += 1
+    # 최근 3개월만 반환
+    _recent_yms = sorted(_monthly_counter.keys(), reverse=True)[:3]
+    monthly_trades = {ym: _monthly_counter[ym] for ym in _recent_yms}
 
     # 단지명+동 기준으로 그룹핑, 면적(㎡ 반올림)별로 세분화
     apt_map: dict = {}
@@ -540,7 +552,105 @@ async def get_apartments(
 
     if dong:
         apartments = [a for a in apartments if a.get("dong") == dong]
-    return {"apartments": apartments, "cached": False, "full": not quick}
+    return {"apartments": apartments, "cached": False, "full": not quick, "monthly_trades": monthly_trades}
+
+
+# ─── KB 주간 아파트 매매가격 지수 ──────────────────────────────
+KB_INDEX_URL = "https://data-api.kbland.kr/bfmstat/weekMnthlyHuseTrnd/priceIndex"
+_kb_index_cache: dict | None = None
+_kb_index_cached_at: datetime | None = None
+KB_INDEX_TTL_HOURS = 12
+
+# 지역명 정규화: KB 응답의 지역명 → 우리 district 키로 매핑
+# 인천은 "중구/동구/서구"를 서울과 구분하기 위해 "인천중구/인천동구/인천서구"로 변환
+KB_INCHEON_ALIAS = {
+    "중구": "인천중구", "동구": "인천동구", "서구": "인천서구",
+}
+
+async def _fetch_kb_region(region_code: str) -> dict:
+    """KB API 호출 → {지역명: {index, change, date}} 딕셔너리 반환
+
+    응답 구조:
+      dataBody.data = {
+        "데이터리스트": [{지역코드, 지역명, dataList: [idx0, idx1, ..., idxN, change_rate]}, ...],
+        "날짜리스트":   ["20240401", ..., "20260330"],  ← N개 (dataList보다 1개 적음)
+      }
+    dataList[-1] = 해당 주 주간 변동률(%)
+    dataList[-2] = 최신 가격지수
+    """
+    try:
+        params = {
+            "월간주간구분코드": "02",
+            "매물종별구분": "01",
+            "매매전세코드": "01",
+            "지역코드": region_code,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(KB_INDEX_URL, params=params)
+            if r.status_code != 200:
+                return {}
+            body = r.json()
+            inner = body.get("dataBody", {}).get("data", {})
+            if not isinstance(inner, dict):
+                return {}
+            items = inner.get("데이터리스트", [])
+            dates = inner.get("날짜리스트", [])
+            date_str = dates[-1] if dates else ""
+            result = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = (item.get("지역명") or "").strip()
+                dl = item.get("dataList", [])
+                if not name or len(dl) < 2:
+                    continue
+                # 마지막 값 = 변동률(%), 마지막에서 두 번째 = 최신 지수
+                change = float(dl[-1])
+                idx = float(dl[-2])
+                result[name] = {"index": round(idx, 2), "change": round(change, 2), "date": date_str}
+            return result
+    except Exception as e:
+        logger.warning(f"KB index fetch error ({region_code}): {e}")
+    return {}
+
+
+@app.get("/api/kb-index")
+async def get_kb_index():
+    """KB 주간 아파트 매매가격 지수 (구/시 레벨)"""
+    global _kb_index_cache, _kb_index_cached_at
+    now = datetime.now()
+    if _kb_index_cache is not None and _kb_index_cached_at:
+        age = (now - _kb_index_cached_at).total_seconds() / 3600
+        if age < KB_INDEX_TTL_HOURS:
+            return _kb_index_cache
+
+    import asyncio
+    maps = await asyncio.gather(
+        _fetch_kb_region("11"),  # 서울 (25개 구 전체 포함)
+        _fetch_kb_region("41"),  # 경기 (시/군/구 포함)
+        _fetch_kb_region("28"),  # 인천 (군/구 포함)
+    )
+
+    seoul_map, gyeonggi_map, incheon_map = maps
+
+    index_map: dict = {}
+    # 서울/경기: 지역명 그대로 저장
+    for name, info in {**seoul_map, **gyeonggi_map}.items():
+        index_map[name] = info
+        # "수원시 팔달구" → "팔달구" short형도 저장 (단 서울과 충돌 없는 경우만)
+        parts = name.split()
+        if len(parts) == 2:
+            index_map.setdefault(parts[1], info)
+    # 인천: 서울 "중구/서구/동구"와 충돌하므로 alias 적용
+    for name, info in incheon_map.items():
+        norm = KB_INCHEON_ALIAS.get(name, name)
+        index_map[norm] = info
+
+    logger.info(f"KB index 로드: {len(index_map)}개 지역")
+    result = {"districts": index_map}
+    _kb_index_cache = result
+    _kb_index_cached_at = now
+    return result
 
 
 @app.post("/api/geocache")
