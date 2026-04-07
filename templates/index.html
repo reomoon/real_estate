@@ -200,7 +200,7 @@
       gap: 6px;
       overflow-x: auto;
       scrollbar-width: none;
-      padding: 6px 12px;
+      padding: 6px 64px 6px 12px;
       border-bottom: 1px solid var(--border);
       background: #fff;
       position: fixed;
@@ -619,9 +619,13 @@
     #btn-my-location svg { width: 20px; height: 20px; }
 
     /* ── 학군 버튼 (필터바 내) ── */
+    #school-filter {
+      position: fixed;
+      top: calc(var(--safe-top) + var(--header-h) + 6px);
+      right: 12px;
+      z-index: 495;
+    }
     #btn-school {
-      flex-shrink: 0;
-      margin-left: auto;
       padding: 4px 10px;
       border-radius: 20px;
       border: 1.5px solid #7c3aed;
@@ -632,6 +636,31 @@
       -webkit-tap-highlight-color: transparent;
     }
     #btn-school.active { background: #7c3aed; color: #fff; }
+    #school-panel {
+      position: absolute;
+      top: 38px;
+      right: 0;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      box-shadow: 0 10px 24px rgba(0,0,0,.12);
+      padding: 10px 12px;
+      min-width: 118px;
+      display: none;
+      z-index: 520;
+    }
+    #school-panel.open { display: block; }
+    .school-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #111827;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .school-check + .school-check { margin-top: 8px; }
+    .school-check input { accent-color: #7c3aed; }
 
     /* ── 학교 마커 ── */
     .school-marker {
@@ -723,7 +752,13 @@
   <button class="filter-chip" data-min="10">300세대+</button>
   <button class="filter-chip active" data-min="20">500세대+</button>
   <button class="filter-chip" data-min="30">1000세대+</button>
-  <button id="btn-school" title="학군 보기">학군</button>
+  <div id="school-filter">
+    <button id="btn-school" title="학군 보기">학군</button>
+    <div id="school-panel">
+      <label class="school-check"><input type="checkbox" id="chk-middle" checked> 중학교</label>
+      <label class="school-check"><input type="checkbox" id="chk-high" checked> 고등학교</label>
+    </div>
+  </div>
 </div>
 
 <!-- 지도 -->
@@ -891,6 +926,7 @@ let schoolGeocodeCache = {}; // address → {lat, lng}
 let schoolDetailCache = {};
 let schoolInfoWindow = null;
 let lastSchoolDistrict = '';
+let schoolTypeFilters = { middle: true, high: true };
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -962,9 +998,24 @@ async function hydrateSchoolMarker(school, el) {
   }
 }
 
-document.getElementById('btn-school').addEventListener('click', () => {
-  schoolVisible = !schoolVisible;
+function syncSchoolFilterUI() {
+  schoolVisible = schoolTypeFilters.middle || schoolTypeFilters.high;
   document.getElementById('btn-school').classList.toggle('active', schoolVisible);
+}
+
+function closeSchoolPanel() {
+  document.getElementById('school-panel').classList.remove('open');
+}
+
+document.getElementById('btn-school').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = document.getElementById('school-panel');
+  panel.classList.toggle('open');
+});
+
+document.getElementById('chk-middle').addEventListener('change', (e) => {
+  schoolTypeFilters.middle = e.target.checked;
+  syncSchoolFilterUI();
   if (schoolVisible) {
     lastSchoolDistrict = currentDistrict;
     loadSchoolMarkers();
@@ -972,6 +1023,25 @@ document.getElementById('btn-school').addEventListener('click', () => {
     schoolMarkers.forEach(m => m.setMap(null));
     schoolMarkers = [];
     if (schoolInfoWindow) schoolInfoWindow.close();
+  }
+});
+
+document.getElementById('chk-high').addEventListener('change', (e) => {
+  schoolTypeFilters.high = e.target.checked;
+  syncSchoolFilterUI();
+  if (schoolVisible) {
+    lastSchoolDistrict = currentDistrict;
+    loadSchoolMarkers();
+  } else {
+    schoolMarkers.forEach(m => m.setMap(null));
+    schoolMarkers = [];
+    if (schoolInfoWindow) schoolInfoWindow.close();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!document.getElementById('school-filter').contains(e.target)) {
+    closeSchoolPanel();
   }
 });
 
@@ -995,8 +1065,8 @@ async function loadSchoolMarkers() {
     fetch(`/api/schools?district=${encodeURIComponent(currentDistrict)}&school_type=${encodeURIComponent('고등학교')}`).then(r => r.json()),
   ]);
   const schools = [
-    ...(midRes.schools || []),
-    ...(highRes.schools || []),
+    ...(schoolTypeFilters.middle ? (midRes.schools || []) : []),
+    ...(schoolTypeFilters.high ? (highRes.schools || []) : []),
   ];
 
   for (const school of schools) {
@@ -1079,7 +1149,7 @@ function updateGlobalAptPool() {
 
 // ── 지역 탭 이벤트 ──────────────────────────────────────────
 function isDistrictOverviewMode() {
-  return map && map.getZoom() < ZOOM_CLUSTER;
+  return map && map.getZoom() < ZOOM_DONG;
 }
 
 function updateHeaderLayout() {
