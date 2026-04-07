@@ -48,7 +48,7 @@
       --tab-h: 0px;
     }
 
-    html, body { width: 100%; height: 100%; overflow: hidden; }
+    html, body { width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; }
     body { font-family: -apple-system, 'Noto Sans KR', sans-serif; background: #f9fafb; }
 
     /* ── 지도 컨테이너 ── */
@@ -598,8 +598,8 @@
 
     /* ── 내 위치 버튼 ── */
     #btn-my-location {
-      position: absolute;
-      top: 12px;
+      position: fixed;
+      top: calc(var(--safe-top) + var(--header-h) + var(--filter-h) + 12px);
       right: 12px;
       width: 40px;
       height: 40px;
@@ -616,6 +616,33 @@
     }
     #btn-my-location:active { background: #f3f4f6; }
     #btn-my-location svg { width: 20px; height: 20px; }
+
+    /* ── 학군 버튼 (필터바 내) ── */
+    #btn-school {
+      flex-shrink: 0;
+      margin-left: auto;
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1.5px solid #7c3aed;
+      background: #fff;
+      font-size: 12px; font-weight: 700; color: #7c3aed;
+      cursor: pointer;
+      white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #btn-school.active { background: #7c3aed; color: #fff; }
+
+    /* ── 학교 마커 ── */
+    .school-marker {
+      display: flex; align-items: center; gap: 3px;
+      background: #fff; border: 1.5px solid #7c3aed;
+      border-radius: 6px; padding: 3px 7px;
+      font-size: 11px; font-weight: 600; color: #7c3aed;
+      white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,.15);
+      cursor: pointer;
+    }
+    .school-marker.type-고 { border-color: #dc2626; color: #dc2626; }
+    .school-marker .school-icon { font-size: 12px; }
 
     /* ── 단지 수 뱃지 ── */
     #count-badge {
@@ -655,6 +682,7 @@
   <button class="filter-chip" data-min="10">300세대+</button>
   <button class="filter-chip active" data-min="20">500세대+</button>
   <button class="filter-chip" data-min="30">1000세대+</button>
+  <button id="btn-school" title="학군 보기">학군</button>
 </div>
 
 <!-- 지도 -->
@@ -737,7 +765,7 @@ const REGION_DATA = {
                 '포천시','여주시','동두천시','과천시','연천군','가평군','양평군'],
     centers: {
       '수원시':[37.2636,127.0286],'성남시':[37.4201,127.1267],'고양시':[37.6584,126.8320],
-      '용인시':[37.2411,127.1776],'부천시':[37.5036,126.7660],'안산시':[37.3219,126.8309],
+      '용인시':[37.3236,127.1000],'부천시':[37.5036,126.7660],'안산시':[37.3219,126.8309],
       '안양시':[37.3943,126.9568],'남양주시':[37.6360,127.2160],'화성시':[37.1996,126.8312],
       '평택시':[36.9921,127.1128],'의정부시':[37.7382,127.0337],'시흥시':[37.3800,126.8026],
       '파주시':[37.7601,126.7801],'광명시':[37.4789,126.8644],'하남시':[37.5391,127.2148],
@@ -802,7 +830,7 @@ function moveToMyLocation() {
 function initMap() {
   map = new naver.maps.Map('map', {
     center: new naver.maps.LatLng(37.5665, 126.9780),
-    zoom: 16,
+    zoom: 12,
     zoomControl: false,
     scaleControl: false,
     logoControl: false,
@@ -813,6 +841,67 @@ function initMap() {
 
   // 내 위치 버튼
   document.getElementById('btn-my-location').addEventListener('click', moveToMyLocation);
+}
+
+// ── 학군 토글 ──────────────────────────────────────────────
+let schoolMarkers = [];
+let schoolVisible = false;
+let schoolGeocodeCache = {}; // address → {lat, lng}
+
+document.getElementById('btn-school').addEventListener('click', () => {
+  schoolVisible = !schoolVisible;
+  document.getElementById('btn-school').classList.toggle('active', schoolVisible);
+  if (schoolVisible) {
+    loadSchoolMarkers();
+  } else {
+    schoolMarkers.forEach(m => m.setMap(null));
+    schoolMarkers = [];
+  }
+});
+
+async function loadSchoolMarkers() {
+  schoolMarkers.forEach(m => m.setMap(null));
+  schoolMarkers = [];
+  if (!currentDistrict || !window.naver?.maps?.Service) return;
+
+  const [midRes, highRes] = await Promise.all([
+    fetch(`/api/schools?district=${encodeURIComponent(currentDistrict)}&school_type=${encodeURIComponent('중학교')}`).then(r => r.json()),
+    fetch(`/api/schools?district=${encodeURIComponent(currentDistrict)}&school_type=${encodeURIComponent('고등학교')}`).then(r => r.json()),
+  ]);
+  const schools = [
+    ...(midRes.schools || []),
+    ...(highRes.schools || []),
+  ];
+
+  for (const school of schools) {
+    const addr = school.address;
+    if (!addr) continue;
+    let pos = schoolGeocodeCache[addr];
+    if (!pos) {
+      pos = await new Promise(resolve => {
+        naver.maps.Service.geocode({ query: addr }, (status, res) => {
+          if (status !== naver.maps.Service.Status.OK) { resolve(null); return; }
+          const item = res.v2?.addresses?.[0];
+          if (!item) { resolve(null); return; }
+          resolve({ lat: parseFloat(item.y), lng: parseFloat(item.x) });
+        });
+      });
+      if (pos) schoolGeocodeCache[addr] = pos;
+    }
+    if (!pos || !schoolVisible) break;
+
+    const el = document.createElement('div');
+    el.className = `school-marker${school.type === '고등학교' ? ' type-고' : ''}`;
+    el.innerHTML = `<span class="school-icon">${school.type === '고등학교' ? '🏫' : '🏫'}</span>${school.name}`;
+
+    const marker = new naver.maps.Marker({
+      position: new naver.maps.LatLng(pos.lat, pos.lng),
+      map,
+      icon: { content: el, anchor: new naver.maps.Point(0, 20) },
+      zIndex: 200,
+    });
+    schoolMarkers.push(marker);
+  }
 }
 
 // ── 세대수 필터 ────────────────────────────────────────────
@@ -882,6 +971,7 @@ function buildDistrictBar() {
 
 function selectDistrict(name) {
   currentDistrict = name;
+  userSelectedDistrict = true; // 사용자 직접 선택 → idle이 덮어쓰지 않음
   document.querySelectorAll('.dist-chip').forEach(b =>
     b.classList.toggle('active', b.textContent === name));
   closeSheet();
@@ -899,12 +989,27 @@ function onMapIdle() {
   _idleTimer = setTimeout(() => {
     updateCurrentDistrict();
     updateVisibleMarkers();
-    if (map.getZoom() >= ZOOM_CLUSTER) loadVisibleDistricts();
+    // 줌인 상태(단지 마커 표시 레벨)일 때만 자동 로드
+    // 줌아웃에서는 구 마커 클릭 시에만 로드 (불필요한 API 호출 방지)
+    if (map.getZoom() >= ZOOM_DONG) loadVisibleDistricts();
   }, 300);
 }
 
 // ── 지도 중심 기준으로 currentDistrict/Region 자동 갱신 ──────
 function updateCurrentDistrict() {
+  // 사용자가 직접 구를 선택한 경우 → idle이 바꾸지 않음
+  if (userSelectedDistrict) return;
+
+  // GPS 역지오코딩으로 확정된 위치가 있으면 항상 그걸 우선 사용
+  if (myLocationDistrict) {
+    if (currentDistrict !== myLocationDistrict) {
+      currentDistrict = myLocationDistrict;
+      document.querySelectorAll('.dist-chip').forEach(b =>
+        b.classList.toggle('active', b.textContent === currentDistrict));
+    }
+    return;
+  }
+
   const c = map.getCenter();
   let minDist = Infinity, best = null, bestRegion = null;
   Object.entries(REGION_DATA).forEach(([region, data]) => {
@@ -916,7 +1021,6 @@ function updateCurrentDistrict() {
   if (!best) return;
 
   // hysteresis: 현재 구까지의 거리보다 20% 이상 가까울 때만 전환
-  // (인접 구 경계에서 계속 바뀌는 현상 방지)
   const curCenter = DISTRICT_CENTERS[currentDistrict];
   if (curCenter) {
     const curDist = Math.hypot(curCenter[0] - c.lat(), curCenter[1] - c.lng());
@@ -938,23 +1042,32 @@ function updateCurrentDistrict() {
 
 // ── 화면에 보이는 구/시 로드 ───────────────────────────────
 async function loadVisibleDistricts() {
-  const bounds = map.getBounds();
+  const z = map.getZoom();
   const toLoad = new Set();
 
-  // 뷰포트 안에 중심이 있는 구 로드
-  Object.entries(DISTRICT_CENTERS).forEach(([name, [lat, lng]]) => {
-    if (bounds.hasPoint(new naver.maps.LatLng(lat, lng))
-        && !loadedDistricts.has(name)
-        && !loadingDistricts.has(name)) {
-      toLoad.add(name);
+  if (z >= ZOOM_DONG) {
+    // 줌인 상태: currentDistrict만 로드 (불필요한 이웃 구 조회 방지)
+    if (currentDistrict
+        && !loadedDistricts.has(currentDistrict)
+        && !loadingDistricts.has(currentDistrict)) {
+      toLoad.add(currentDistrict);
     }
-  });
-
-  // 항상 currentDistrict는 로드 (줌인 시 구 중심이 뷰포트 밖에 있어도)
-  if (currentDistrict
-      && !loadedDistricts.has(currentDistrict)
-      && !loadingDistricts.has(currentDistrict)) {
-    toLoad.add(currentDistrict);
+  } else {
+    // 줌아웃 상태: 뷰포트에 보이는 구 로드
+    const bounds = map.getBounds();
+    Object.entries(DISTRICT_CENTERS).forEach(([name, [lat, lng]]) => {
+      if (bounds.hasPoint(new naver.maps.LatLng(lat, lng))
+          && !loadedDistricts.has(name)
+          && !loadingDistricts.has(name)) {
+        toLoad.add(name);
+      }
+    });
+    // currentDistrict도 항상 포함
+    if (currentDistrict
+        && !loadedDistricts.has(currentDistrict)
+        && !loadingDistricts.has(currentDistrict)) {
+      toLoad.add(currentDistrict);
+    }
   }
 
   if (toLoad.size) await Promise.all([...toLoad].map(d => loadDistrictData(d)));
@@ -981,7 +1094,7 @@ async function loadDistrictData(district) {
     const quickParams  = new URLSearchParams({ district, quick: 'true' });
     if (isMyDistrict) quickParams.set('dong', myLocationDong);
 
-    const quickRes  = await fetch(`/api/apartments?${quickParams}`);
+    const quickRes  = await fetch(`/api/markers?${quickParams}`);
     const quickData = await quickRes.json();
     const quickApts = quickData.apartments || [];
 
@@ -1011,7 +1124,7 @@ async function loadDistrictData(district) {
 // ── 12개월 전체 데이터 백그라운드 로드 ──────────────────────
 async function loadFullDistrict(district) {
   try {
-    const res  = await fetch(`/api/apartments?district=${encodeURIComponent(district)}`);
+    const res  = await fetch(`/api/markers?district=${encodeURIComponent(district)}`);
     const data = await res.json();
     const apts = data.apartments || [];
     if (!apts.length) return;
@@ -1273,8 +1386,11 @@ function showDistrictMarkers() {
 
     naver.maps.Event.addListener(marker, 'click', () => {
       const [lat, lng] = DISTRICT_CENTERS[name];
+      currentDistrict = name;
+      userSelectedDistrict = true;
       map.setCenter(new naver.maps.LatLng(lat, lng));
-      map.setZoom(ZOOM_DONG - 1); // idle → loadVisibleDistricts 자동 트리거
+      map.setZoom(ZOOM_DONG);
+      loadDistrictData(name);
     });
 
     markers.push(marker);
@@ -1324,12 +1440,11 @@ let currentApt = null;
 let sheetChart = null;
 let tradesState = null; // { apt, areaIdx, nextOffset, hasMore, loading }
 
-function openSheet(apt) {
+async function openSheet(apt) {
   currentApt = apt;
   document.getElementById('sheet-name').textContent = apt.name;
   const built = apt.built_year ? `${apt.built_year}년 · ` : '';
   document.getElementById('sheet-meta').textContent = `${built}${apt.dong}`;
-
 
   // 동 평균 비교
   const cmp = document.getElementById('sheet-dong-compare');
@@ -1348,10 +1463,34 @@ function openSheet(apt) {
     cmp.style.display = 'none';
   }
 
+  // 로딩 상태 표시 후 시트 오픈
+  document.getElementById('sheet-area-select').innerHTML = '<option>불러오는 중...</option>';
+  document.getElementById('sheet-price').textContent = '...';
+  document.getElementById('sheet-price-date').textContent = '';
+  document.getElementById('sheet-chart-wrap').style.visibility = 'hidden';
+  document.getElementById('sheet-trades').innerHTML =
+    '<div style="padding:24px;text-align:center;color:#9ca3af;font-size:13px">거래내역 불러오는 중...</div>';
+  document.getElementById('sheet').classList.add('open');
+
+  try {
+    const params = new URLSearchParams({ key: apt.key, district: apt.district });
+    const res  = await fetch(`/api/apt-trades?${params}`);
+    const data = await res.json();
+    apt.area_types = data.area_types || [];
+    renderSheetDetails(apt);
+  } catch (e) {
+    document.getElementById('sheet-trades').innerHTML =
+      '<div style="padding:24px;text-align:center;color:#ef4444;font-size:13px">불러오기 실패</div>';
+  }
+}
+
+function renderSheetDetails(apt) {
+  document.getElementById('sheet-chart-wrap').style.visibility = '';
+
   // 평형 드롭다운 구성 — 34평(84㎡) 우선 선택
   const sel = document.getElementById('sheet-area-select');
   sel.innerHTML = '';
-  const preferredSizes = [84, 59]; // 34평 → 25평 우선순위
+  const preferredSizes = [84, 59];
   const types = apt.area_types || [];
   let defaultIdx = 0;
   let bestDist = Infinity;
@@ -1370,8 +1509,6 @@ function openSheet(apt) {
   sel.value = defaultIdx;
   sel.onchange = () => renderSheetArea(apt, parseInt(sel.value));
   renderSheetArea(apt, defaultIdx);
-
-  document.getElementById('sheet').classList.add('open');
 }
 
 function renderSheetArea(apt, idx) {
@@ -1742,7 +1879,10 @@ function detectLocationByReverseGeocode(latlng) {
   });
 }
 
-let myLocationDong = ''; // 시작 시 역지오코딩으로 감지한 내 위치 동
+let myLocationDong = '';        // 시작 시 역지오코딩으로 감지한 내 위치 동
+let myLocationDistrict = '';    // 역지오코딩으로 확정된 구/시
+let myLocationLatLng = null;    // GPS 좌표
+let userSelectedDistrict = false; // 사용자가 직접 구 선택했으면 true → idle이 바꾸지 않음
 
 // ── 시작 ───────────────────────────────────────────────────
 document.getElementById('sheet-close').addEventListener('click', closeSheet);
@@ -1768,7 +1908,7 @@ async function startApp() {
       if (!navigator.geolocation) { resolve(null); return; }
       navigator.geolocation.getCurrentPosition(pos => {
         map.setCenter(new naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude));
-        map.setZoom(15);
+        map.setZoom(12); // 구/시 클러스터가 보이는 줌으로 시작
         resolve(pos);
       }, () => resolve(null), { timeout: 5000 });
     }),
@@ -1776,24 +1916,24 @@ async function startApp() {
     waitForGeocoder(10000).catch(() => {}),
   ]);
 
-  // 즉시 현재 화면의 구 로딩 시작
-  if (map.getZoom() >= ZOOM_CLUSTER) loadVisibleDistricts();
-
   // geocoder 준비됐으면 역지오코딩으로 정확한 구/동 판별
   if (gpsResult && window.naver?.maps?.Service?.reverseGeocode) {
     const latlng = new naver.maps.LatLng(gpsResult.coords.latitude, gpsResult.coords.longitude);
     const found  = await detectLocationByReverseGeocode(latlng);
     if (found) {
-      currentRegion   = found.region;
-      currentDistrict = found.district;
-      myLocationDong  = found.dong;
+      currentRegion      = found.region;
+      currentDistrict    = found.district;
+      myLocationDong     = found.dong;
+      myLocationDistrict = found.district;
+      myLocationLatLng   = latlng;
       document.querySelectorAll('.rtab').forEach(b =>
         b.classList.toggle('active', b.dataset.region === currentRegion));
       buildDistrictBar();
-      // 구가 바뀌었으면 해당 구 로딩 (아직 안 됐을 수 있음)
-      loadVisibleDistricts();
     }
   }
+
+  // 현재 구 데이터 로드 (역지오코딩 결과 or 기본값)
+  if (currentDistrict) loadDistrictData(currentDistrict);
 }
 
 startApp();

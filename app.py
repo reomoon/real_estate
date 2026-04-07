@@ -6,6 +6,7 @@ from fastapi import Request
 import httpx
 from datetime import datetime
 import xml.etree.ElementTree as ET
+import urllib.parse
 import logging
 import os
 import json
@@ -106,6 +107,41 @@ def _save_geo_cache():
         logger.warning(f"geo cache 저장 실패: {e}")
 
 _load_geo_cache()
+
+# ─── 아파트 데이터 파일 영속 캐시 ─────────────────────────────
+APT_CACHE_FILE = "apt_cache.json"
+APT_CACHE_TTL_HOURS = 24  # 하루 지나면 재조회
+
+def _load_apt_cache():
+    try:
+        if os.path.exists(APT_CACHE_FILE):
+            with open(APT_CACHE_FILE, encoding="utf-8") as f:
+                stored = json.load(f)
+            now = datetime.now()
+            loaded = 0
+            for district, entry in stored.items():
+                saved_at = datetime.fromisoformat(entry.get("saved_at", "2000-01-01"))
+                age_hours = (now - saved_at).total_seconds() / 3600
+                if age_hours < APT_CACHE_TTL_HOURS:
+                    _cache["apartments"][district] = entry["apartments"]
+                    loaded += 1
+            logger.info(f"apt cache 로드: {loaded}개 구 (TTL {APT_CACHE_TTL_HOURS}h)")
+    except Exception as e:
+        logger.warning(f"apt cache 로드 실패: {e}")
+
+def _save_apt_cache(district: str, apartments: list):
+    try:
+        stored = {}
+        if os.path.exists(APT_CACHE_FILE):
+            with open(APT_CACHE_FILE, encoding="utf-8") as f:
+                stored = json.load(f)
+        stored[district] = {"saved_at": datetime.now().isoformat(), "apartments": apartments}
+        with open(APT_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(stored, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"apt cache 저장 실패: {e}")
+
+_load_apt_cache()
 
 # 마커 기준 면적 순서: 84㎡ 우선, 없으면 59㎡, 없으면 가장 가까운 면적
 PREFERRED_AREAS = [84, 59]
@@ -234,6 +270,41 @@ async def root(request: Request):
 @app.get("/api/districts")
 async def get_districts():
     return {"districts": list(DISTRICTS.keys())}
+
+
+@app.get("/api/markers")
+async def get_markers(
+    district: str = Query(default="강남구"),
+    quick:    bool = Query(default=False),
+):
+    """마커 전용 경량 API — area_types(거래이력) 제외 (캐시 객체 변경 안 함)"""
+    result = await get_apartments(district=district, dong="", quick=quick)
+    if hasattr(result, "body"):
+        return result
+    # 얕은 복사로 캐시 원본 보호
+    markers = [
+        {k: v for k, v in apt.items() if k != "area_types"}
+        for apt in result.get("apartments", [])
+    ]
+    return {"apartments": markers, "cached": result.get("cached"), "full": result.get("full")}
+
+
+@app.get("/api/apt-trades")
+async def get_apt_trades(
+    key:      str = Query(...),
+    district: str = Query(...),
+):
+    """단지 클릭 시 거래이력 조회 — 서버 캐시 없으면 12개월 fetch 후 반환"""
+    if district not in DISTRICTS:
+        return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
+    # 12개월 캐시 없으면 fetch
+    if district not in _cache["apartments"]:
+        await get_apartments(district=district, dong="", quick=False)
+    apts = _cache["apartments"].get(district, [])
+    apt  = next((a for a in apts if a["key"] == key), None)
+    if not apt:
+        return JSONResponse({"error": "단지를 찾을 수 없습니다"}, status_code=404)
+    return {"area_types": apt.get("area_types", [])}
 
 
 @app.get("/api/apartments")
@@ -462,6 +533,7 @@ async def get_apartments(
     # 12개월 full 데이터만 캐시 (quick=3개월은 캐시 안 함)
     if not quick:
         _cache["apartments"][district] = apartments
+        _save_apt_cache(district, apartments)
     logger.info(f"[{district}] 마커: {len(apartments)}개 (months={months}, 좌표캐시: {sum(1 for a in apartments if 'lat' in a)}개)")
 
     if dong:
@@ -557,6 +629,83 @@ async def get_more_trades(
     next_offset = offset + count
     has_more = next_offset < 36  # 최대 3년치
     return {"trades": trade_history, "has_more": has_more, "next_offset": next_offset}
+
+
+NEIS_API_KEY = os.getenv("NEIS_API_KEY", "")  # https://open.neis.go.kr 에서 무료 등록
+NEIS_BASE = "https://open.neis.go.kr/hub/schoolInfo"
+# 시도명 매핑
+SIDO_MAP = {
+    "서울": "서울특별시", "경기": "경기도", "인천": "인천광역시",
+}
+DISTRICT_SIDO = {}
+for _region, _data in [
+    ("서울", ["종로구","중구","용산구","성동구","광진구","동대문구","중랑구","성북구","강북구",
+              "도봉구","노원구","은평구","서대문구","마포구","양천구","강서구","구로구","금천구",
+              "영등포구","동작구","관악구","서초구","강남구","송파구","강동구"]),
+    ("경기", ["수원시","성남시","의정부시","안양시","부천시","광명시","평택시","동두천시","안산시",
+              "고양시","과천시","구리시","남양주시","오산시","시흥시","군포시","의왕시","하남시",
+              "용인시","파주시","이천시","안성시","김포시","화성시","광주시","양주시","포천시",
+              "여주시","연천군","가평군","양평군"]),
+    ("인천", ["인천중구","인천동구","미추홀구","연수구","남동구","부평구","계양구","인천서구","강화군","옹진군"]),
+]:
+    for _d in _data:
+        DISTRICT_SIDO[_d] = _region
+
+_school_cache: dict = {}  # "sido_sigungu_type" → list[school]
+
+@app.get("/api/schools")
+async def get_schools(
+    district: str = Query(...),
+    school_type: str = Query(default="중학교"),  # 중학교 | 고등학교
+):
+    """NEIS에서 학교 목록 조회 (이름+주소) — 프론트에서 geocoding"""
+    region = DISTRICT_SIDO.get(district, "서울")
+    sido = SIDO_MAP.get(region, "서울특별시")
+    # 경기도는 시군구명으로 필터 (용인시, 수원시 등)
+    cache_key = f"{sido}_{district}_{school_type}"
+    if cache_key in _school_cache:
+        return {"schools": _school_cache[cache_key]}
+
+    try:
+        # 페이지네이션으로 전체 수집 후 주소에 district 포함된 것만 필터
+        all_items = []
+        page = 1
+        page_size = 100
+        key_param = f"KEY={NEIS_API_KEY}&" if NEIS_API_KEY else ""
+        sido_enc = urllib.parse.quote(sido)
+        type_enc = urllib.parse.quote(school_type)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            while True:
+                url = (f"{NEIS_BASE}?{key_param}Type=json&pIndex={page}&pSize={page_size}"
+                       f"&SCHUL_KND_SC_NM={type_enc}&LCTN_SC_NM={sido_enc}")
+                r = await client.get(url)
+                data = r.json()
+                rows = data.get("schoolInfo", [])
+                # rows[0]=head, rows[1]=data — 마지막 페이지는 rows[1]이 없을 수 있음
+                if len(rows) < 2:
+                    break
+                items = rows[1].get("row") or []
+                all_items.extend(items)
+                if len(items) < page_size:
+                    break
+                page += 1
+
+        # 주소에 district 이름 포함된 학교만 필터
+        schools = [
+            {
+                "name": s["SCHUL_NM"],
+                "type": school_type,
+                "address": s.get("ORG_RDNMA") or "",
+            }
+            for s in all_items
+            if district in (s.get("ORG_RDNMA") or "")
+        ]
+        _school_cache[cache_key] = schools
+        logger.info(f"[학교] {district} {school_type}: {len(schools)}개 / 전체 {len(all_items)}개")
+        return {"schools": schools}
+    except Exception as e:
+        logger.error(f"school fetch error: {e}")
+        return {"schools": []}
 
 
 @app.delete("/api/cache")
