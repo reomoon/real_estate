@@ -113,6 +113,7 @@
       scrollbar-width: none;
       -webkit-overflow-scrolling: touch;
     }
+    #district-scroll.hidden { display: none; }
     #district-scroll::-webkit-scrollbar { display: none; }
     .dist-chip {
       flex-shrink: 0;
@@ -634,15 +635,55 @@
 
     /* ── 학교 마커 ── */
     .school-marker {
-      display: flex; align-items: center; gap: 3px;
-      background: #fff; border: 1.5px solid #7c3aed;
-      border-radius: 6px; padding: 3px 7px;
-      font-size: 11px; font-weight: 600; color: #7c3aed;
-      white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,.15);
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      background: #fff;
+      border: 1.5px solid #7c3aed;
+      border-radius: 8px;
+      padding: 5px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #7c3aed;
+      white-space: nowrap;
+      box-shadow: 0 1px 3px rgba(0,0,0,.15);
       cursor: pointer;
+      line-height: 1.2;
     }
     .school-marker.type-고 { border-color: #dc2626; color: #dc2626; }
-    .school-marker .school-icon { font-size: 12px; }
+    .school-marker .school-name { font-size: 11px; }
+    .school-marker .school-meta {
+      font-size: 10px;
+      font-weight: 600;
+      opacity: .82;
+    }
+    .school-popup {
+      min-width: 210px;
+      max-width: 260px;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      box-shadow: 0 10px 24px rgba(0,0,0,.16);
+      padding: 12px 13px;
+      font-size: 12px;
+      color: #111827;
+      line-height: 1.45;
+    }
+    .school-popup .ttl {
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+    .school-popup .sub {
+      color: #6b7280;
+      margin-bottom: 8px;
+    }
+    .school-popup .row { margin-top: 3px; }
+    .school-popup .note {
+      margin-top: 8px;
+      color: #6b7280;
+      font-size: 11px;
+    }
 
     /* ── 단지 수 뱃지 ── */
     #count-badge {
@@ -847,15 +888,90 @@ function initMap() {
 let schoolMarkers = [];
 let schoolVisible = false;
 let schoolGeocodeCache = {}; // address → {lat, lng}
+let schoolDetailCache = {};
+let schoolInfoWindow = null;
+let lastSchoolDistrict = '';
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
+}
+
+function renderSchoolMarkerContent(school) {
+  const meta = school.summary_text
+    ? `<div class="school-meta">${escapeHtml(school.summary_text)}</div>`
+    : '';
+  return `<div class="school-name">${escapeHtml(school.name)}</div>${meta}`;
+}
+
+function renderSchoolPopup(school, detail, loading = false) {
+  if (loading) {
+    return `<div class="school-popup"><div class="ttl">${escapeHtml(school.name)}</div><div class="sub">${escapeHtml(school.type)}</div><div class="row">불러오는 중...</div></div>`;
+  }
+  if (!detail?.available) {
+    return `<div class="school-popup"><div class="ttl">${escapeHtml(school.name)}</div><div class="sub">${escapeHtml(school.type)}</div></div>`;
+  }
+
+  const rows = [];
+  if (detail.type === '중학교') {
+    rows.push(`<div class="row">과학고: ${detail.science_high_count ?? 0}명</div>`);
+    rows.push(`<div class="row">외고·국제고: ${detail.foreign_lang_high_count ?? 0}명</div>`);
+    if (detail.special_purpose_rate != null) {
+      rows.push(`<div class="row">과고+외고 비율: ${detail.special_purpose_rate}%</div>`);
+    }
+  } else {
+    rows.push(`<div class="row">대학: ${detail.university_count ?? 0}명</div>`);
+    rows.push(`<div class="row">전문대학: ${detail.junior_college_count ?? 0}명</div>`);
+    rows.push(`<div class="row">국외진학: ${detail.overseas_count ?? 0}명</div>`);
+  }
+  if (detail.message) {
+    rows.push(`<div class="note">${escapeHtml(detail.message)}</div>`);
+  }
+
+  return `<div class="school-popup"><div class="ttl">${escapeHtml(school.name)}</div><div class="sub">${escapeHtml(school.type)}</div>${rows.join('')}</div>`;
+}
+
+async function fetchSchoolDetail(school) {
+  const key = `${school.type}|${school.name}|${school.address}|${currentDistrict}`;
+  if (schoolDetailCache[key]) return schoolDetailCache[key];
+  const params = new URLSearchParams({
+    district: currentDistrict,
+    name: school.name,
+    school_type: school.type,
+    address: school.address || '',
+  });
+  const detail = await fetch(`/api/school-detail?${params}`).then(r => r.json());
+  schoolDetailCache[key] = detail;
+  return detail;
+}
+
+async function hydrateSchoolMarker(school, el) {
+  try {
+    const detail = await fetchSchoolDetail(school);
+    if (detail?.summary_text) {
+      school.summary_text = detail.summary_text;
+      el.innerHTML = renderSchoolMarkerContent(school);
+    }
+  } catch (err) {
+    console.error('[school-detail] hydrate failed:', err);
+  }
+}
 
 document.getElementById('btn-school').addEventListener('click', () => {
   schoolVisible = !schoolVisible;
   document.getElementById('btn-school').classList.toggle('active', schoolVisible);
   if (schoolVisible) {
+    lastSchoolDistrict = currentDistrict;
     loadSchoolMarkers();
   } else {
     schoolMarkers.forEach(m => m.setMap(null));
     schoolMarkers = [];
+    if (schoolInfoWindow) schoolInfoWindow.close();
   }
 });
 
@@ -863,6 +979,16 @@ async function loadSchoolMarkers() {
   schoolMarkers.forEach(m => m.setMap(null));
   schoolMarkers = [];
   if (!currentDistrict || !window.naver?.maps?.Service) return;
+  lastSchoolDistrict = currentDistrict;
+  if (!schoolInfoWindow) {
+    schoolInfoWindow = new naver.maps.InfoWindow({
+      content: '',
+      borderWidth: 0,
+      backgroundColor: 'transparent',
+      pixelOffset: new naver.maps.Point(0, -8),
+      disableAnchor: false,
+    });
+  }
 
   const [midRes, highRes] = await Promise.all([
     fetch(`/api/schools?district=${encodeURIComponent(currentDistrict)}&school_type=${encodeURIComponent('중학교')}`).then(r => r.json()),
@@ -888,11 +1014,12 @@ async function loadSchoolMarkers() {
       });
       if (pos) schoolGeocodeCache[addr] = pos;
     }
-    if (!pos || !schoolVisible) break;
+    if (!schoolVisible) break;
+    if (!pos) continue;
 
     const el = document.createElement('div');
     el.className = `school-marker${school.type === '고등학교' ? ' type-고' : ''}`;
-    el.innerHTML = `<span class="school-icon">${school.type === '고등학교' ? '🏫' : '🏫'}</span>${school.name}`;
+    el.innerHTML = renderSchoolMarkerContent(school);
 
     const marker = new naver.maps.Marker({
       position: new naver.maps.LatLng(pos.lat, pos.lng),
@@ -900,7 +1027,24 @@ async function loadSchoolMarkers() {
       icon: { content: el, anchor: new naver.maps.Point(0, 20) },
       zIndex: 200,
     });
+    naver.maps.Event.addListener(marker, 'click', async () => {
+      if (!schoolInfoWindow) return;
+      schoolInfoWindow.setContent(renderSchoolPopup(school, null, true));
+      schoolInfoWindow.open(map, marker);
+      try {
+        const detail = await fetchSchoolDetail(school);
+        if (detail?.summary_text) {
+          school.summary_text = detail.summary_text;
+          el.innerHTML = renderSchoolMarkerContent(school);
+        }
+        schoolInfoWindow.setContent(renderSchoolPopup(school, detail));
+      } catch (err) {
+        console.error('[school-detail] click failed:', err);
+        schoolInfoWindow.setContent(renderSchoolPopup(school, { available: false, message: '학교 정보를 불러오지 못했습니다.' }));
+      }
+    });
     schoolMarkers.push(marker);
+    hydrateSchoolMarker(school, el);
   }
 }
 
@@ -934,6 +1078,16 @@ function updateGlobalAptPool() {
 }
 
 // ── 지역 탭 이벤트 ──────────────────────────────────────────
+function isDistrictOverviewMode() {
+  return map && map.getZoom() < ZOOM_CLUSTER;
+}
+
+function updateHeaderLayout() {
+  const bar = document.getElementById('district-scroll');
+  if (!bar) return;
+  bar.classList.toggle('hidden', isDistrictOverviewMode());
+}
+
 function buildRegionTabs() {
   document.querySelectorAll('.rtab').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -959,6 +1113,7 @@ function buildRegionTabs() {
 function buildDistrictBar() {
   const bar = document.getElementById('district-scroll');
   bar.innerHTML = '';
+  updateHeaderLayout();
   const districts = REGION_DATA[currentRegion].districts;
   districts.forEach(name => {
     const btn = document.createElement('button');
@@ -978,7 +1133,8 @@ function selectDistrict(name) {
   const center = DISTRICT_CENTERS[name];
   if (center) {
     map.setCenter(new naver.maps.LatLng(center[0], center[1]));
-    map.setZoom(ZOOM_DONG - 1);
+    map.setZoom(ZOOM_DONG);
+    loadDistrictData(name);
     // idle 이벤트가 loadVisibleDistricts를 자동 트리거
   }
 }
@@ -988,7 +1144,11 @@ function onMapIdle() {
   clearTimeout(_idleTimer);
   _idleTimer = setTimeout(() => {
     updateCurrentDistrict();
+    updateHeaderLayout();
     updateVisibleMarkers();
+    if (schoolVisible && currentDistrict && currentDistrict !== lastSchoolDistrict) {
+      loadSchoolMarkers();
+    }
     // 줌인 상태(단지 마커 표시 레벨)일 때만 자동 로드
     // 줌아웃에서는 구 마커 클릭 시에만 로드 (불필요한 API 호출 방지)
     if (map.getZoom() >= ZOOM_DONG) loadVisibleDistricts();
@@ -1367,35 +1527,41 @@ function showDistrictMarkers() {
   clearMarkers();
   closeSheet();
   const bounds = map.getBounds();
-  REGION_DATA[currentRegion].districts.forEach(name => {
-    const center = DISTRICT_CENTERS[name];
-    if (!center) return;
-    const pos = new naver.maps.LatLng(center[0], center[1]);
-    if (!bounds.hasPoint(pos)) return;
+  Object.entries(REGION_DATA).forEach(([region, data]) => {
+    data.districts.forEach(name => {
+      const center = DISTRICT_CENTERS[name];
+      if (!center) return;
+      const pos = new naver.maps.LatLng(center[0], center[1]);
+      if (!bounds.hasPoint(pos)) return;
 
-    const el = document.createElement('div');
-    el.className = 'district-tag';
-    el.innerHTML = `${name}`;
+      const el = document.createElement('div');
+      el.className = 'district-tag';
+      el.innerHTML = `${name}`;
 
-    const marker = new naver.maps.Marker({
-      position: pos,
-      map,
-      icon: { content: el, anchor: new naver.maps.Point(40, 20) },
-      zIndex: 100,
+      const marker = new naver.maps.Marker({
+        position: pos,
+        map,
+        icon: { content: el, anchor: new naver.maps.Point(40, 20) },
+        zIndex: 100,
+      });
+
+      naver.maps.Event.addListener(marker, 'click', () => {
+        const [lat, lng] = DISTRICT_CENTERS[name];
+        currentRegion = region;
+        currentDistrict = name;
+        userSelectedDistrict = true;
+        document.querySelectorAll('.rtab').forEach(b =>
+          b.classList.toggle('active', b.dataset.region === currentRegion));
+        buildDistrictBar();
+        map.setCenter(new naver.maps.LatLng(lat, lng));
+        map.setZoom(ZOOM_DONG);
+        loadDistrictData(name);
+      });
+
+      markers.push(marker);
     });
-
-    naver.maps.Event.addListener(marker, 'click', () => {
-      const [lat, lng] = DISTRICT_CENTERS[name];
-      currentDistrict = name;
-      userSelectedDistrict = true;
-      map.setCenter(new naver.maps.LatLng(lat, lng));
-      map.setZoom(ZOOM_DONG);
-      loadDistrictData(name);
-    });
-
-    markers.push(marker);
   });
-  showBadge(`${currentRegion} · 구/시를 선택하세요`);
+  showBadge(`서울 · 경기 · 인천 · 구/시를 선택하세요`);
 }
 
 // ── 마커 생성 (풀용) ──────────────────────────────────────

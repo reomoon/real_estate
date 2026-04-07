@@ -10,6 +10,8 @@ import urllib.parse
 import logging
 import os
 import json
+import re
+import html as html_lib
 from dotenv import load_dotenv
 
 # .env 파일에서 환경변수 로드
@@ -652,6 +654,293 @@ for _region, _data in [
         DISTRICT_SIDO[_d] = _region
 
 _school_cache: dict = {}  # "sido_sigungu_type" → list[school]
+_school_index_cache: dict | None = None  # (school_type, school_name) -> [schoolinfo_id]
+_school_meta_cache: dict = {}            # schoolinfo_id -> {title, address}
+_school_detail_cache: dict = {}          # district|type|name|address -> detail
+_school_region_index_cache: dict = {}    # district|type -> {school_name: [schoolinfo_id]}
+
+SCHOOLINFO_INDEX_URL = "https://www.schoolinfo.go.kr/ei/ss/pneiss_a08_s0.do"
+SCHOOLINFO_DETAIL_URL = "https://www.schoolinfo.go.kr/ei/ss/Pneiss_b01_s0.do"
+SCHOOLINFO_CAREER_URL = "https://www.schoolinfo.go.kr/ei/pp/Pneipp_b06_s0p.do"
+SCHOOLINFO_DISTRICT_ALIAS = {
+    "인천중구": "중구",
+    "인천동구": "동구",
+    "인천서구": "서구",
+}
+SCHOOLINFO_SIDO_CODE = {
+    "서울": "1100000000",
+    "경기": "4100000000",
+    "인천": "2800000000",
+}
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text or "")
+    text = html_lib.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_space(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _school_detail_key(district: str, school_type: str, name: str, address: str) -> str:
+    return f"{district}|{school_type}|{name}|{address}"
+
+
+def _district_schoolinfo_gugun_code(district: str) -> str | None:
+    lawd_codes = DISTRICTS.get(district) or []
+    if not lawd_codes:
+        return None
+    if len(lawd_codes) == 1:
+        return f"{lawd_codes[0]}00000"
+
+    common = lawd_codes[0]
+    for code in lawd_codes[1:]:
+        i = 0
+        max_i = min(len(common), len(code))
+        while i < max_i and common[i] == code[i]:
+            i += 1
+        common = common[:i]
+    root = common.ljust(5, "0")[:5]
+    return f"{root}00000"
+
+
+async def _load_school_index():
+    global _school_index_cache
+    if _school_index_cache is not None:
+        return _school_index_cache
+
+    index_map: dict[tuple[str, str], list[str]] = {}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(SCHOOLINFO_INDEX_URL)
+        text = r.text
+        section_pattern = re.compile(
+            r'<h4 class="tabtt">([^<]+)</h4>\s*<ul class="link_list">(.*?)</ul>',
+            re.S,
+        )
+        link_pattern = re.compile(
+            r"searchSchul\('([^']+)'\)\" title=\"([^\"]+?) 학교정보 새창\">([^<]+)</a>"
+        )
+        for section_name, section_html in section_pattern.findall(text):
+            school_type = _strip_html(section_name)
+            if school_type not in {"중학교", "고등학교"}:
+                continue
+            for school_id, _, school_name in link_pattern.findall(section_html):
+                key = (school_type, _strip_html(school_name))
+                index_map.setdefault(key, []).append(school_id)
+        logger.info(f"[학교] schoolinfo 인덱스 로드: {sum(len(v) for v in index_map.values())}개")
+    except Exception as e:
+        logger.error(f"school index fetch error: {e}")
+
+    _school_index_cache = index_map
+    return _school_index_cache
+
+
+async def _fetch_school_meta(school_id: str) -> dict:
+    if school_id in _school_meta_cache:
+        return _school_meta_cache[school_id]
+
+    meta = {"title": "", "address": ""}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(SCHOOLINFO_DETAIL_URL, params={"SHL_IDF_CD": school_id})
+        text = r.text
+        title_m = re.search(r"<title>([^<]+?) 학교정보", text)
+        desc_m = re.search(r'<meta name="description" content="([^"]+)"', text)
+        if title_m:
+            meta["title"] = _strip_html(title_m.group(1))
+        if desc_m:
+            desc = html_lib.unescape(desc_m.group(1))
+            addr_m = re.search(r"주소\s*:\s*([^,]+)", desc)
+            if addr_m:
+                meta["address"] = addr_m.group(1).strip()
+    except Exception as e:
+        logger.warning(f"school meta fetch error ({school_id}): {e}")
+
+    _school_meta_cache[school_id] = meta
+    return meta
+
+
+async def _load_school_region_index(district: str, school_type: str) -> dict[str, list[str]]:
+    cache_key = f"{district}|{school_type}"
+    if cache_key in _school_region_index_cache:
+        return _school_region_index_cache[cache_key]
+
+    region = DISTRICT_SIDO.get(district, "서울")
+    sido_code = SCHOOLINFO_SIDO_CODE.get(region)
+    gugun_code = _district_schoolinfo_gugun_code(district)
+    index_map: dict[str, list[str]] = {}
+    if not sido_code or not gugun_code:
+        _school_region_index_cache[cache_key] = index_map
+        return index_map
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                SCHOOLINFO_INDEX_URL,
+                data={"SIDO_CODE": sido_code, "GUGUN_CODE": gugun_code},
+            )
+        text = r.text
+        section_pattern = re.compile(
+            r'<h4 class="tabtt">([^<]+)</h4>\s*<ul class="link_list">(.*?)</ul>',
+            re.S,
+        )
+        link_pattern = re.compile(
+            r"searchSchul\('([^']+)'\)\" title=\"([^\"]+?) 학교정보 새창\">([^<]+)</a>"
+        )
+        for section_name, section_html in section_pattern.findall(text):
+            current_type = _strip_html(section_name)
+            if current_type != school_type:
+                continue
+            for school_id, _, school_name in link_pattern.findall(section_html):
+                clean_name = _strip_html(school_name)
+                index_map.setdefault(clean_name, []).append(school_id)
+        logger.info(f"[학교] schoolinfo 지역 인덱스 로드: {district} {school_type} {len(index_map)}개")
+    except Exception as e:
+        logger.warning(f"school region index fetch error ({district}, {school_type}): {e}")
+
+    _school_region_index_cache[cache_key] = index_map
+    return index_map
+
+
+async def _resolve_schoolinfo_id(name: str, school_type: str, district: str, address: str) -> str | None:
+    regional_index = await _load_school_region_index(district, school_type)
+    regional_candidates = regional_index.get(name, [])
+    if regional_candidates:
+        if len(regional_candidates) == 1:
+            return regional_candidates[0]
+        candidates = regional_candidates
+    else:
+        candidates = []
+
+    index_map = await _load_school_index()
+    if not candidates:
+        candidates = index_map.get((school_type, name), [])
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    district_alias = SCHOOLINFO_DISTRICT_ALIAS.get(district, district)
+    normalized_address = _normalize_space(address)
+    for school_id in candidates:
+        meta = await _fetch_school_meta(school_id)
+        meta_addr = meta.get("address", "")
+        normalized_meta_addr = _normalize_space(meta_addr)
+        if district_alias and district_alias in meta_addr:
+            return school_id
+        if normalized_address and normalized_meta_addr:
+            if normalized_address in normalized_meta_addr or normalized_meta_addr in normalized_address:
+                return school_id
+    return candidates[0]
+
+
+async def _fetch_school_career_detail(name: str, school_type: str, district: str, address: str) -> dict:
+    cache_key = _school_detail_key(district, school_type, name, address)
+    if cache_key in _school_detail_cache:
+        return _school_detail_cache[cache_key]
+
+    school_id = await _resolve_schoolinfo_id(name, school_type, district, address)
+    if not school_id:
+        detail = {
+            "name": name,
+            "type": school_type,
+            "available": False,
+            "message": "학교알리미 학교 식별자를 찾지 못했습니다.",
+        }
+        _school_detail_cache[cache_key] = detail
+        return detail
+
+    year = str(datetime.now().year)
+    params = {
+        "SHL_IDF_CD": school_id,
+        "HG_NM": name,
+        "GS_BURYU_CD": "JG040",
+        "GS_HANGMOK_CD": "06",
+        "JG_BURYU_CD": "JG130",
+        "JG_HANGMOK_CD": "52",
+        "GS_HANGMOK_NO": "13-다",
+        "GS_HANGMOK_NM": "졸업생의 진로 현황",
+        "JG_YEAR": year,
+        "JG_YEAR2": year,
+        "GS_TYPE": "Y",
+        "SORT": "BR",
+        "CHOSEN_JG_YEAR": year,
+        "PRE_JG_YEAR": year,
+        "LOAD_TYPE": "single",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(SCHOOLINFO_CAREER_URL, data=params)
+        text = r.text
+        table_m = re.search(
+            r'<table class="box hidden_table">.*?<thead>(.*?)</thead>.*?<tbody>(.*?)</tbody>',
+            text,
+            re.S,
+        )
+        if not table_m:
+            raise ValueError("진로현황 표를 찾지 못했습니다.")
+
+        headers = [_strip_html(x) for x in re.findall(r"<th[^>]*>(.*?)</th>", table_m.group(1), re.S)]
+        values = []
+        for cell in re.findall(r"<td[^>]*>(.*?)</td>", table_m.group(2), re.S):
+            raw = _strip_html(cell).replace(",", "")
+            try:
+                values.append(int(raw or "0"))
+            except ValueError:
+                values.append(0)
+        stats = {k: v for k, v in zip(headers, values)}
+        total = sum(stats.values())
+
+        detail = {
+            "name": name,
+            "type": school_type,
+            "available": True,
+            "schoolinfo_id": school_id,
+            "schoolinfo_url": f"{SCHOOLINFO_DETAIL_URL}?SHL_IDF_CD={school_id}",
+            "counts": stats,
+            "total": total,
+            "achievement_rate": None,
+        }
+
+        if school_type == "중학교":
+            science = stats.get("[특수목적고] 과학고", 0)
+            foreign = stats.get("[특수목적고] 외고국제고", 0)
+            special = science + foreign
+            detail["science_high_count"] = science
+            detail["foreign_lang_high_count"] = foreign
+            detail["special_purpose_count"] = special
+            detail["special_purpose_rate"] = round((special / total) * 100, 1) if total else None
+            if detail["special_purpose_rate"] is not None:
+                detail["summary_text"] = f"과고 {science} · 외고 {foreign} · {detail['special_purpose_rate']}%"
+            else:
+                detail["summary_text"] = f"과고 {science} · 외고 {foreign}"
+            detail["message"] = None
+        else:
+            university = stats.get("대학", 0)
+            detail["summary_text"] = f"대학 {university} · 취업 {stats.get('취업자', 0)}"
+            detail["university_count"] = university
+            detail["junior_college_count"] = stats.get("전문대학", 0)
+            detail["overseas_count"] = stats.get("국외진학", 0)
+            detail["seoul_national_count"] = None
+            detail["medical_school_count"] = None
+            detail["message"] = "학교알리미 표준 공시에는 서울대·의대 개별 진학 실적이 직접 제공되지 않습니다."
+
+        _school_detail_cache[cache_key] = detail
+        return detail
+    except Exception as e:
+        logger.warning(f"school career detail fetch error ({name}): {e}")
+        detail = {
+            "name": name,
+            "type": school_type,
+            "available": False,
+            "message": "학교 진로현황을 불러오지 못했습니다.",
+        }
+        _school_detail_cache[cache_key] = detail
+        return detail
 
 @app.get("/api/schools")
 async def get_schools(
@@ -708,10 +997,27 @@ async def get_schools(
         return {"schools": []}
 
 
+@app.get("/api/school-detail")
+async def get_school_detail(
+    district: str = Query(...),
+    name: str = Query(...),
+    school_type: str = Query(...),
+    address: str = Query(default=""),
+):
+    return await _fetch_school_career_detail(
+        name=name.strip(),
+        school_type=school_type.strip(),
+        district=district.strip(),
+        address=address.strip(),
+    )
+
+
 @app.delete("/api/cache")
 async def clear_cache():
     _cache["apartments"].clear()
     _raw_period_cache.clear()
+    _school_detail_cache.clear()
+    _school_meta_cache.clear()
     return {"message": "캐시 삭제"}
 
 
