@@ -81,6 +81,8 @@ DISTRICTS: dict[str, list[str]] = {
 
 # 구별 아파트 데이터 메모리 캐시
 _cache: dict = {"apartments": {}}
+# 추가 기간 원시 데이터 캐시: "district_YYYYMM_YYYYMM" → list[dict]
+_raw_period_cache: dict = {}
 
 # ─── 좌표 캐시 (파일 영속) ────────────────────────────────────
 GEO_CACHE_FILE = "geo_cache.json"
@@ -235,18 +237,28 @@ async def get_districts():
 
 
 @app.get("/api/apartments")
-async def get_apartments(district: str = Query(default="강남구")):
+async def get_apartments(
+    district: str = Query(default="강남구"),
+    dong:     str = Query(default=""),   # 특정 동 필터 (빠른 초기 로드용)
+    quick:    bool = Query(default=False), # True: 3개월만 조회 (빠른 초기 응답)
+):
     if district not in DISTRICTS:
         return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
 
+    # 12개월 캐시 히트 → 즉시 반환 (dong 필터 적용)
     if district in _cache["apartments"]:
-        return {"apartments": _cache["apartments"][district], "cached": True}
+        apts = _cache["apartments"][district]
+        if dong:
+            apts = [a for a in apts if a.get("dong") == dong]
+        return {"apartments": apts, "cached": True, "full": True}
 
-    lawd_codes = DISTRICTS[district]
-    deal_yms = get_recent_deal_yms(12)
-
-    # 최근 12개월 × 코드 수 × 2타입 — 전체 병렬 호출
     import asyncio
+    lawd_codes = DISTRICTS[district]
+
+    # quick=True: 3개월만 먼저 조회 (초기 응답 속도 우선)
+    months = 3 if quick else 12
+    deal_yms = get_recent_deal_yms(months)
+
     tasks = []
     for code in lawd_codes:
         for ym in deal_yms:
@@ -254,10 +266,10 @@ async def get_apartments(district: str = Query(default="강남구")):
             tasks.append(fetch_rents(code, ym))
     results = await asyncio.gather(*tasks)
     all_raw = [row for batch in results for row in batch]
-    logger.info(f"[{district}] 총 {len(all_raw)}건")
+    logger.info(f"[{district}] 총 {len(all_raw)}건 (months={months})")
 
     if not all_raw:
-        return {"apartments": [], "cached": False}
+        return {"apartments": [], "cached": False, "full": not quick}
 
     # 단지명+동 기준으로 그룹핑, 면적(㎡ 반올림)별로 세분화
     apt_map: dict = {}
@@ -447,9 +459,14 @@ async def get_apartments(district: str = Query(default="강남구")):
             apt["lat"] = geo["lat"]
             apt["lng"] = geo["lng"]
 
-    _cache["apartments"][district] = apartments
-    logger.info(f"[{district}] 마커: {len(apartments)}개 (좌표캐시: {sum(1 for a in apartments if 'lat' in a)}개)")
-    return {"apartments": apartments, "cached": False}
+    # 12개월 full 데이터만 캐시 (quick=3개월은 캐시 안 함)
+    if not quick:
+        _cache["apartments"][district] = apartments
+    logger.info(f"[{district}] 마커: {len(apartments)}개 (months={months}, 좌표캐시: {sum(1 for a in apartments if 'lat' in a)}개)")
+
+    if dong:
+        apartments = [a for a in apartments if a.get("dong") == dong]
+    return {"apartments": apartments, "cached": False, "full": not quick}
 
 
 @app.post("/api/geocache")
@@ -464,9 +481,88 @@ async def update_geocache(request: Request):
     return {"ok": True}
 
 
+@app.get("/api/more-trades")
+async def get_more_trades(
+    district:  str = Query(...),
+    apt_name:  str = Query(...),
+    apt_dong:  str = Query(...),
+    area_key:  int = Query(...),
+    offset:    int = Query(12),
+    count:     int = Query(6),
+):
+    """특정 단지의 추가 거래 이력 (offset~offset+count 개월 전)"""
+    if district not in DISTRICTS:
+        return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
+
+    all_yms    = get_recent_deal_yms(offset + count)
+    period_yms = all_yms[offset: offset + count]
+    if not period_yms:
+        return {"trades": [], "has_more": False}
+
+    cache_key = f"{district}_{'_'.join(period_yms)}"
+    if cache_key not in _raw_period_cache:
+        import asyncio
+        lawd_codes = DISTRICTS[district]
+        tasks = []
+        for code in lawd_codes:
+            for ym in period_yms:
+                tasks.append(fetch_transactions(code, ym))
+                tasks.append(fetch_rents(code, ym))
+        results = await asyncio.gather(*tasks)
+        _raw_period_cache[cache_key] = [r for batch in results for r in batch]
+        logger.info(f"[{district}] more-trades {period_yms[0]}~{period_yms[-1]}: {len(_raw_period_cache[cache_key])}건")
+
+    all_raw = _raw_period_cache[cache_key]
+
+    # 해당 단지+면적만 필터
+    target_area = round(area_key / 3) * 3
+    rows = [
+        r for r in all_raw
+        if r.get("aptNm", "").strip() == apt_name
+        and r.get("umdNm", "").strip() == apt_dong
+        and abs(round(float(r.get("excluUseAr", 0)) / 3) * 3 - target_area) <= 3
+    ]
+
+    trade_history = []
+    for t in sorted(rows, key=trade_date_key, reverse=True):
+        ttype = t.get("_type", "매매")
+        ty  = t.get("dealYear", "")[2:]
+        tmo = str(t.get("dealMonth", "")).zfill(2)
+        td  = str(t.get("dealDay", "")).zfill(2)
+        if ttype == "매매":
+            try:
+                p = int(t.get("dealAmount", "0").replace(",", ""))
+            except (ValueError, TypeError):
+                p = 0
+            price_str = format_price(p)
+        else:
+            try:
+                deposit = int(t.get("deposit", "0").replace(",", ""))
+                monthly = int(t.get("monthlyRent", "0") or "0")
+            except (ValueError, TypeError):
+                deposit = monthly = 0
+            price_str = f"{format_price(deposit)}/{monthly:,}" if monthly > 0 else format_price(deposit)
+            p = deposit
+        cdeal = (t.get("cdealType") or "").strip()
+        dealing = (t.get("dealingGbn") or "").strip()
+        info = "취소" if cdeal == "O" else (cdeal or dealing)
+        trade_history.append({
+            "year_month": f"{ty}.{tmo}", "day": td,
+            "trade_type": ttype, "price": p, "price_display": price_str,
+            "info": info,
+            "apt_dong": (t.get("aptDong") or "").strip(),
+            "floor": t.get("floor", ""),
+        })
+
+    next_offset = offset + count
+    has_more = next_offset < 36  # 최대 3년치
+    return {"trades": trade_history, "has_more": has_more, "next_offset": next_offset}
+
+
 @app.delete("/api/cache")
 async def clear_cache():
     _cache["apartments"].clear()
+    _raw_period_cache.clear()
     return {"message": "캐시 삭제"}
 
 

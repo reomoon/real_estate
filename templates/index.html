@@ -570,6 +570,53 @@
       margin-top: 1px;
     }
 
+    /* ── 동 클러스터 마커 ── */
+    .dong-tag {
+      background: #fff;
+      border: 2px solid #2563eb;
+      color: #2563eb;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 6px 13px;
+      border-radius: 18px;
+      white-space: nowrap;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15);
+      -webkit-tap-highlight-color: transparent;
+      transition: background .15s;
+      line-height: 1.3;
+      text-align: center;
+    }
+    .dong-tag:active { background: #eff6ff; }
+    .dong-tag .dt-count {
+      display: block;
+      font-size: 10px;
+      font-weight: 400;
+      opacity: .65;
+      margin-top: 1px;
+    }
+
+    /* ── 내 위치 버튼 ── */
+    #btn-my-location {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: #fff;
+      border: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 480;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #btn-my-location:active { background: #f3f4f6; }
+    #btn-my-location svg { width: 20px; height: 20px; }
+
     /* ── 단지 수 뱃지 ── */
     #count-badge {
       position: fixed;
@@ -613,10 +660,17 @@
 <!-- 지도 -->
 <div id="map-wrap">
   <div id="map"></div>
+  <button id="btn-my-location" title="내 위치">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+      <circle cx="12" cy="12" r="8" stroke-dasharray="2 2"/>
+    </svg>
+  </button>
 </div>
 
 <!-- 로딩 -->
-<div id="loading">
+<div id="loading" class="hidden">
   <div class="spinner"></div>
   <div id="loading-text">데이터 불러오는 중...</div>
   <div id="loading-progress"></div>
@@ -711,18 +765,38 @@ const REGION_DATA = {
 const DISTRICT_CENTERS = Object.values(REGION_DATA)
   .reduce((acc, r) => Object.assign(acc, r.centers), {});
 
-const ZOOM_CLUSTER = 13; // 이 줌 미만: 구 클러스터, 이상: 단지 마커
+const ZOOM_CLUSTER = 13; // 이 줌 미만: 구 클러스터
+const ZOOM_DONG    = 15; // 이 줌 미만: 동 클러스터, 이상: 단지 마커
 
 let map = null;
-let markers = [];
+let markers = [];           // 구/동 클러스터 마커
 let activeMarkerEl = null;
+const _aptPool = new Map(); // apt.key → { marker, el } — 단지 마커 풀
+let _idleTimer  = null;     // idle 디바운스 타이머
+let _lastZoom   = -1;       // 마지막 처리 줌
 let currentRegion = '서울';
 let currentDistrict = '강남구';
-let isBusy = false;
-let allApartments = [];  // 전체 데이터 보관 (필터 재적용용)
-let minTradeFilter = 10;  // 기본: 300세대+ 추정 (12개월 거래 10건 이상)
-let allGeocodedApts = []; // 지오코딩 완료된 {apt, pos} 전체 목록
-let activeAptKey = null;  // 현재 열린 시트의 apt key
+let allApartments = [];
+let minTradeFilter = 10;
+let allGeocodedApts = [];
+let activeAptKey = null;
+
+// ── 세션 메모리 캐시 (구별 1회만 처리) ────────────────────────
+// districtMemCache[district] = { apts: [], geocoded: [], pending: [] }
+const districtMemCache = {};
+const loadedDistricts  = new Set(); // API 로드 완료
+const loadingDistricts = new Set(); // 현재 로드 중
+let   loadingCount = 0;
+
+// ── 내 위치로 이동 ─────────────────────────────────────────
+function moveToMyLocation() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(pos => {
+    const latlng = new naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+    map.setCenter(latlng);
+    map.setZoom(16);
+  }, () => {});
+}
 
 // ── 지도 초기화 ────────────────────────────────────────────
 function initMap() {
@@ -735,9 +809,10 @@ function initMap() {
     mapDataControl: false,
   });
   naver.maps.Event.addListener(map, 'click', closeSheet);
-  naver.maps.Event.addListener(map, 'idle', () => {
-    updateVisibleMarkers();
-  });
+  naver.maps.Event.addListener(map, 'idle', onMapIdle);
+
+  // 내 위치 버튼
+  document.getElementById('btn-my-location').addEventListener('click', moveToMyLocation);
 }
 
 // ── 세대수 필터 ────────────────────────────────────────────
@@ -747,25 +822,26 @@ function buildFilterBar() {
       document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       minTradeFilter = parseInt(btn.dataset.min);
-      // 데이터 재요청 없이 필터만 재적용
       clearMarkers();
       closeSheet();
-      applyFilterAndRender(currentDistrict);
+      updateGlobalAptPool();
+      updateVisibleMarkers();
     });
   });
 }
 
-function applyFilterAndRender(district) {
-  allGeocodedApts = [];
-  const filtered = allApartments.filter(a => a.total_trades >= minTradeFilter);
-  if (!filtered.length) {
-    showBadge(`${district} · 조건에 맞는 단지 없음`);
-    return;
-  }
-  // 필터된 단지 중 최고가를 대장으로 재지정
-  const maxPrice = Math.max(...filtered.map(a => a.price));
-  filtered.forEach(a => { a.is_champion = (a.price === maxPrice); });
-  renderMarkers(filtered, district);
+// ── 전체 캐시에서 필터 적용 후 allGeocodedApts 재구성 ─────────
+function updateGlobalAptPool() {
+  const allApts = [], allGeocoded = [];
+  Object.values(districtMemCache).forEach(cache => {
+    allApts.push(...cache.apts);
+    allGeocoded.push(...cache.geocoded);
+  });
+  allApartments = allApts;
+  const filteredKeys = new Set(
+    allApts.filter(a => a.total_trades >= minTradeFilter).map(a => a.key)
+  );
+  allGeocodedApts = allGeocoded.filter(({ apt }) => filteredKeys.has(apt.key));
 }
 
 // ── 지역 탭 이벤트 ──────────────────────────────────────────
@@ -777,16 +853,15 @@ function buildRegionTabs() {
       btn.classList.add('active');
       currentRegion = btn.dataset.region;
       const r = REGION_DATA[currentRegion];
-      // 첫 번째 도시로 자동 선택
       currentDistrict = r.districts[0];
       buildDistrictBar();
-      const center = r.centers[currentDistrict] || r.mapCenter;
+      const center = r.mapCenter;
       map.setCenter(new naver.maps.LatLng(center[0], center[1]));
-      map.setZoom(r.clusterZoom + 3);
+      map.setZoom(r.clusterZoom + 1);
       closeSheet();
-      clearMarkers();
-      allGeocodedApts = [];
-      loadApartments(currentDistrict);
+      // 다른 지역으로 이동 시 apt 마커 풀 초기화
+      _aptPool.forEach(({ marker }) => marker.setMap(null));
+      _aptPool.clear();
     });
   });
 }
@@ -806,41 +881,159 @@ function buildDistrictBar() {
 }
 
 function selectDistrict(name) {
-  if (isBusy || name === currentDistrict) return;
   currentDistrict = name;
-  document.querySelectorAll('.dist-chip').forEach(b => {
-    b.classList.toggle('active', b.textContent === name);
-  });
+  document.querySelectorAll('.dist-chip').forEach(b =>
+    b.classList.toggle('active', b.textContent === name));
   closeSheet();
-  loadApartments(name);
+  const center = DISTRICT_CENTERS[name];
+  if (center) {
+    map.setCenter(new naver.maps.LatLng(center[0], center[1]));
+    map.setZoom(ZOOM_DONG - 1);
+    // idle 이벤트가 loadVisibleDistricts를 자동 트리거
+  }
 }
 
-// ── 데이터 로드 ────────────────────────────────────────────
-async function loadApartments(district) {
-  isBusy = true;
-  setLoading(true, `${district} 실거래 조회 중...`, '');
-  clearMarkers();
+// ── 지도 idle 핸들러 (300ms 디바운스) ──────────────────────
+function onMapIdle() {
+  clearTimeout(_idleTimer);
+  _idleTimer = setTimeout(() => {
+    updateCurrentDistrict();
+    updateVisibleMarkers();
+    if (map.getZoom() >= ZOOM_CLUSTER) loadVisibleDistricts();
+  }, 300);
+}
+
+// ── 지도 중심 기준으로 currentDistrict/Region 자동 갱신 ──────
+function updateCurrentDistrict() {
+  const c = map.getCenter();
+  let minDist = Infinity, best = null, bestRegion = null;
+  Object.entries(REGION_DATA).forEach(([region, data]) => {
+    Object.entries(data.centers).forEach(([name, [lat, lng]]) => {
+      const d = Math.hypot(lat - c.lat(), lng - c.lng());
+      if (d < minDist) { minDist = d; best = name; bestRegion = region; }
+    });
+  });
+  if (!best) return;
+
+  // hysteresis: 현재 구까지의 거리보다 20% 이상 가까울 때만 전환
+  // (인접 구 경계에서 계속 바뀌는 현상 방지)
+  const curCenter = DISTRICT_CENTERS[currentDistrict];
+  if (curCenter) {
+    const curDist = Math.hypot(curCenter[0] - c.lat(), curCenter[1] - c.lng());
+    if (minDist > curDist * 0.8) return;
+  }
+
+  const regionChanged = bestRegion !== currentRegion;
+  currentRegion = bestRegion;
+  currentDistrict = best;
+  if (regionChanged) {
+    document.querySelectorAll('.rtab').forEach(b =>
+      b.classList.toggle('active', b.dataset.region === currentRegion));
+    buildDistrictBar();
+  } else {
+    document.querySelectorAll('.dist-chip').forEach(b =>
+      b.classList.toggle('active', b.textContent === currentDistrict));
+  }
+}
+
+// ── 화면에 보이는 구/시 로드 ───────────────────────────────
+async function loadVisibleDistricts() {
+  const bounds = map.getBounds();
+  const toLoad = new Set();
+
+  // 뷰포트 안에 중심이 있는 구 로드
+  Object.entries(DISTRICT_CENTERS).forEach(([name, [lat, lng]]) => {
+    if (bounds.hasPoint(new naver.maps.LatLng(lat, lng))
+        && !loadedDistricts.has(name)
+        && !loadingDistricts.has(name)) {
+      toLoad.add(name);
+    }
+  });
+
+  // 항상 currentDistrict는 로드 (줌인 시 구 중심이 뷰포트 밖에 있어도)
+  if (currentDistrict
+      && !loadedDistricts.has(currentDistrict)
+      && !loadingDistricts.has(currentDistrict)) {
+    toLoad.add(currentDistrict);
+  }
+
+  if (toLoad.size) await Promise.all([...toLoad].map(d => loadDistrictData(d)));
+}
+
+// ── 구/시 단위 데이터 로드 (병렬 가능, 캐시 우선) ──────────────
+async function loadDistrictData(district) {
+  if (loadedDistricts.has(district) || loadingDistricts.has(district)) return;
+
+  // 메모리 캐시 히트 → 즉시 반영
+  if (districtMemCache[district]?.full) {
+    loadedDistricts.add(district);
+    if (districtMemCache[district].pending.length) geocodeBackground(district);
+    return;
+  }
+
+  loadingDistricts.add(district);
+  loadingCount++;
+  setLoading(true, [...loadingDistricts].join(', ') + ' 조회 중...', '');
 
   try {
-    const res = await fetch(`/api/apartments?district=${encodeURIComponent(district)}`);
-    const data = await res.json();
-    const apts = data.apartments || [];
+    // ── Quick Phase: 3개월 데이터 + 내 위치 동 필터로 빠르게 표시 ──
+    const isMyDistrict = (district === currentDistrict) && myLocationDong;
+    const quickParams  = new URLSearchParams({ district, quick: 'true' });
+    if (isMyDistrict) quickParams.set('dong', myLocationDong);
 
-    if (!apts.length) {
-      setLoading(false);
-      showBadge(`${district} · 해당 조건 아파트 없음`);
-      isBusy = false;
-      return;
+    const quickRes  = await fetch(`/api/apartments?${quickParams}`);
+    const quickData = await quickRes.json();
+    const quickApts = quickData.apartments || [];
+
+    if (quickApts.length) {
+      const withCoords    = quickApts.filter(a => a.lat && a.lng);
+      const withoutCoords = quickApts.filter(a => !a.lat || !a.lng);
+      const geocoded = withCoords.map(a => ({ apt: a, pos: new naver.maps.LatLng(a.lat, a.lng) }));
+      districtMemCache[district] = { apts: quickApts, geocoded, pending: withoutCoords, full: false };
+      updateGlobalAptPool();
+      updateVisibleMarkers();
+      if (withoutCoords.length) geocodeBackground(district);
     }
 
-    allApartments = apts;
-    applyFilterAndRender(district);
+    // ── Full Phase: 12개월 전체 데이터 백그라운드 로드 ──────────
+    loadFullDistrict(district);
+
   } catch (e) {
-    console.error(e);
-    setLoading(false);
-    alert('데이터 로드 실패: ' + e.message);
+    console.error(`[${district}] 로드 실패:`, e);
   } finally {
-    isBusy = false;
+    loadingDistricts.delete(district);
+    loadingCount--;
+    if (loadingCount <= 0) setLoading(false);
+    else setLoading(true, [...loadingDistricts].join(', ') + ' 조회 중...', '');
+  }
+}
+
+// ── 12개월 전체 데이터 백그라운드 로드 ──────────────────────
+async function loadFullDistrict(district) {
+  try {
+    const res  = await fetch(`/api/apartments?district=${encodeURIComponent(district)}`);
+    const data = await res.json();
+    const apts = data.apartments || [];
+    if (!apts.length) return;
+
+    const withCoords    = apts.filter(a => a.lat && a.lng);
+    const withoutCoords = apts.filter(a => !a.lat || !a.lng);
+    const geocoded = withCoords.map(a => ({ apt: a, pos: new naver.maps.LatLng(a.lat, a.lng) }));
+
+    // 기존 quick 캐시의 geocoded는 이미 있을 수 있으므로 병합
+    const prev = districtMemCache[district];
+    const mergedGeocoded = prev ? [...prev.geocoded] : [];
+    const existingKeys = new Set(mergedGeocoded.map(e => e.apt.key));
+    geocoded.forEach(e => { if (!existingKeys.has(e.apt.key)) mergedGeocoded.push(e); });
+
+    districtMemCache[district] = { apts, geocoded: mergedGeocoded, pending: withoutCoords, full: true };
+    loadedDistricts.add(district);
+
+    updateGlobalAptPool();
+    updateVisibleMarkers();
+    if (withoutCoords.length) geocodeBackground(district);
+  } catch (e) {
+    console.error(`[${district}] full 로드 실패:`, e);
   }
 }
 
@@ -921,61 +1114,139 @@ async function geocodeApt(apt) {
   return pos;
 }
 
-// ── 마커 렌더 — 지오코딩 후 viewport 기반 표시 ──────────────
-async function renderMarkers(apts, district) {
-  if (!map) { console.error('지도 미초기화'); return; }
+// ── 백그라운드 지오코딩 (viewport 중심에 가까운 것 우선) ──────
+async function geocodeBackground(district) {
+  const cache = districtMemCache[district];
+  if (!cache || !cache.pending.length) return;
 
-  allGeocodedApts = [];
+  // 현재 지도 중심 기준으로 정렬 (가까운 동 우선)
+  const center = map.getCenter();
+  const districtCenter = DISTRICT_CENTERS[district];
+  const refLat = center ? center.lat() : (districtCenter?.[0] ?? 37.5665);
+  const refLng = center ? center.lng() : (districtCenter?.[1] ?? 126.9780);
 
-  // 8개씩 병렬 지오코딩 — 결과를 allGeocodedApts에 모두 수집
-  for (let i = 0; i < apts.length; i += 8) {
-    const batch = apts.slice(i, i + 8);
+  const dongOrder = {};
+  cache.pending.forEach(a => {
+    if (!dongOrder[a.dong]) {
+      const dc = DISTRICT_CENTERS[a.dong];
+      const lat = dc?.[0] ?? refLat;
+      const lng = dc?.[1] ?? refLng;
+      dongOrder[a.dong] = Math.hypot(lat - refLat, lng - refLng);
+    }
+  });
+  cache.pending.sort((a, b) => (dongOrder[a.dong] ?? 9) - (dongOrder[b.dong] ?? 9));
+
+  while (cache.pending.length > 0) {
+    const batch = cache.pending.splice(0, 4);
     const results = await Promise.all(batch.map(apt => geocodeApt(apt)));
-
-    results.forEach((pos, idx) => {
+    results.forEach((pos, i) => {
       if (!pos) return;
-      allGeocodedApts.push({ apt: batch[idx], pos });
+      cache.geocoded.push({ apt: batch[i], pos });
     });
-
-    setLoading(true, `${district} 위치 조회 중...`, `${Math.min(i + 8, apts.length)} / ${apts.length}`);
+    if (map.getZoom() >= ZOOM_DONG) {
+      updateGlobalAptPool();
+      updateVisibleMarkers();
+    }
   }
-
-  setLoading(false);
-
-  if (!allGeocodedApts.length) {
-    showBadge(`${district} · 위치 데이터 없음`);
-    return;
+  // 완료 후 뷰 갱신
+  {
+    updateGlobalAptPool();
+    updateVisibleMarkers();
   }
-
-  // 구 중심점으로 이동, zoom 16 고정
-  const lats = allGeocodedApts.map(({ pos }) => pos.lat());
-  const lngs = allGeocodedApts.map(({ pos }) => pos.lng());
-  const cLat = lats.reduce((a, b) => a + b) / lats.length;
-  const cLng = lngs.reduce((a, b) => a + b) / lngs.length;
-  map.setCenter(new naver.maps.LatLng(cLat, cLng));
-  map.setZoom(16);
-
-  updateVisibleMarkers();
 }
 
-// ── 줌 레벨에 따라 구 클러스터 or 단지 마커 표시 ─────────────
+// ── 줌 레벨에 따라 구/동 클러스터 or 단지 마커 표시 ─────────
 function updateVisibleMarkers() {
-  if (map.getZoom() < ZOOM_CLUSTER) {
+  const z = map.getZoom();
+  if (z < ZOOM_CLUSTER) {
     showDistrictMarkers();
+  } else if (z < ZOOM_DONG) {
+    showDongMarkers();
   } else if (allGeocodedApts.length) {
     showAptMarkers();
   }
 }
 
-function showAptMarkers() {
+function showDongMarkers() {
   clearMarkers();
-  const bounds = map.getBounds();
-  let count = 0;
+  closeSheet();
+  if (!allGeocodedApts.length) return;
+
+  // 동별 위치 집계
+  const dongMap = {};
   allGeocodedApts.forEach(({ apt, pos }) => {
-    if (!bounds.hasPoint(pos)) return;
-    placeMarker(apt, pos);
-    count++;
+    const dong = apt.dong;
+    if (!dong) return;
+    if (!dongMap[dong]) dongMap[dong] = { lats: [], lngs: [], count: 0 };
+    dongMap[dong].lats.push(pos.lat());
+    dongMap[dong].lngs.push(pos.lng());
+    dongMap[dong].count++;
   });
+
+  const bounds = map.getBounds();
+  Object.entries(dongMap).forEach(([dong, { lats, lngs, count }]) => {
+    const lat = lats.reduce((a, b) => a + b) / lats.length;
+    const lng = lngs.reduce((a, b) => a + b) / lngs.length;
+    const pos = new naver.maps.LatLng(lat, lng);
+    if (!bounds.hasPoint(pos)) return;
+
+    const el = document.createElement('div');
+    el.className = 'dong-tag';
+    el.innerHTML = `${dong}<span class="dt-count">${count}개 단지</span>`;
+
+    const marker = new naver.maps.Marker({
+      position: pos,
+      map,
+      icon: { content: el, anchor: new naver.maps.Point(40, 20) },
+      zIndex: 100,
+    });
+
+    naver.maps.Event.addListener(marker, 'click', () => {
+      map.setCenter(pos);
+      map.setZoom(ZOOM_DONG);
+    });
+
+    markers.push(marker);
+  });
+  showBadge(`${currentDistrict} · 동을 선택하세요`);
+}
+
+function showAptMarkers() {
+  // 구/동 클러스터 마커만 제거 (apt 마커는 풀에서 재사용)
+  markers.forEach(m => m.setMap(null));
+  markers = [];
+
+  const bounds = map.getBounds();
+  const activeKeys = new Set(allGeocodedApts.map(({ apt }) => apt.key));
+  let count = 0;
+
+  allGeocodedApts.forEach(({ apt, pos }) => {
+    const inBounds = bounds.hasPoint(pos);
+    let entry = _aptPool.get(apt.key);
+
+    if (!entry) {
+      // 풀에 없으면 새로 생성
+      entry = createAptMarker(apt, pos);
+      _aptPool.set(apt.key, entry);
+    }
+    entry.marker.setMap(inBounds ? map : null);
+    if (inBounds) count++;
+
+    // 활성 마커 스타일 복원
+    if (apt.key === activeAptKey) {
+      entry.el.classList.add('active');
+      activeMarkerEl = entry.el;
+    }
+  });
+
+  // 풀에서 더 이상 필요 없는 마커 제거 (필터 변경 등)
+  _aptPool.forEach((entry, key) => {
+    if (!activeKeys.has(key)) {
+      entry.marker.setMap(null);
+      _aptPool.delete(key);
+    }
+  });
+
   showBadge(`${currentDistrict} · ${count}개 단지`);
 }
 
@@ -1003,23 +1274,16 @@ function showDistrictMarkers() {
     naver.maps.Event.addListener(marker, 'click', () => {
       const [lat, lng] = DISTRICT_CENTERS[name];
       map.setCenter(new naver.maps.LatLng(lat, lng));
-      map.setZoom(15);
-      if (name !== currentDistrict) {
-        currentDistrict = name;
-        document.querySelectorAll('.dist-chip').forEach(b =>
-          b.classList.toggle('active', b.textContent === name));
-        closeSheet();
-        loadApartments(name);
-      }
+      map.setZoom(ZOOM_DONG - 1); // idle → loadVisibleDistricts 자동 트리거
     });
 
     markers.push(marker);
   });
-  showBadge('서울시 · 구를 선택하세요');
+  showBadge(`${currentRegion} · 구/시를 선택하세요`);
 }
 
-// ── 마커 배치 ──────────────────────────────────────────────
-function placeMarker(apt, pos) {
+// ── 마커 생성 (풀용) ──────────────────────────────────────
+function createAptMarker(apt, pos) {
   const el = document.createElement('div');
   el.className = 'price-tag' + (apt.is_champion ? ' champion' : '');
   const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
@@ -1028,7 +1292,7 @@ function placeMarker(apt, pos) {
 
   const marker = new naver.maps.Marker({
     position: pos,
-    map,
+    map: null, // 처음엔 숨김 — showAptMarkers에서 표시 결정
     icon: {
       content: el,
       anchor: new naver.maps.Point(el.offsetWidth / 2 || 38, 26),
@@ -1043,19 +1307,22 @@ function placeMarker(apt, pos) {
     openSheet(apt);
   });
 
-  markers.push(marker);
+  return { marker, el };
 }
 
 function clearMarkers() {
+  // 구/동 클러스터 마커 제거
   markers.forEach(m => m.setMap(null));
   markers = [];
+  // apt 마커 풀도 전부 숨김 (줌아웃 시)
+  _aptPool.forEach(({ marker }) => marker.setMap(null));
   activeMarkerEl = null;
-  // activeAptKey는 유지 — viewport 업데이트 후 같은 마커 재활성화
 }
 
 // ── 하단 시트 ──────────────────────────────────────────────
 let currentApt = null;
 let sheetChart = null;
+let tradesState = null; // { apt, areaIdx, nextOffset, hasMore, loading }
 
 function openSheet(apt) {
   currentApt = apt;
@@ -1121,39 +1388,88 @@ function renderSheetArea(apt, idx) {
 
   // 거래 테이블
   const tradesEl = document.getElementById('sheet-trades');
+  tradesState = {
+    apt, areaIdx: idx,
+    nextOffset: 12, hasMore: true, loading: false,
+  };
+
   if (!at.trades.length) {
     tradesEl.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:13px">거래 내역 없음</div>';
     return;
   }
+
   tradesEl.innerHTML = `
     <table class="trade-table">
       <thead>
         <tr>
-          <th>계약</th>
-          <th>일</th>
-          <th>정보</th>
-          <th>가격</th>
-          <th>타입</th>
+          <th>계약</th><th>일</th><th>정보</th>
+          <th>가격</th><th>타입</th>
           <th style="text-align:right">거래동/층</th>
         </tr>
       </thead>
-      <tbody>
-        ${at.trades.map(t => {
-          const dongFloor = [t.apt_dong ? t.apt_dong + '동' : '', t.floor ? t.floor + '층' : ''].filter(Boolean).join(' ');
-          return `
-            <tr>
-              <td class="col-ym">${t.year_month}</td>
-              <td class="col-day">${t.day}</td>
-              <td class="col-info">${t.info || '-'}</td>
-              <td class="col-price">${t.price_display}</td>
-              <td class="col-tt"><span class="badge badge-${t.trade_type}">${t.trade_type}</span></td>
-              <td class="col-dong">${dongFloor || '-'}</td>
-            </tr>
-          `;
-        }).join('')}
+      <tbody id="trades-tbody">
+        ${tradeRows(at.trades)}
       </tbody>
     </table>
+    <div id="trades-load-more" style="text-align:center;padding:12px;font-size:12px;color:#9ca3af">스크롤하여 더 보기</div>
   `;
+  tradesEl.scrollTop = 0;
+}
+
+function tradeRows(trades) {
+  return trades.map(t => {
+    const dongFloor = [t.apt_dong ? t.apt_dong + '동' : '', t.floor ? t.floor + '층' : ''].filter(Boolean).join(' ');
+    return `<tr>
+      <td class="col-ym">${t.year_month}</td>
+      <td class="col-day">${t.day}</td>
+      <td class="col-info">${t.info || '-'}</td>
+      <td class="col-price">${t.price_display}</td>
+      <td class="col-tt"><span class="badge badge-${t.trade_type}">${t.trade_type}</span></td>
+      <td class="col-dong">${dongFloor || '-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadMoreTrades() {
+  if (!tradesState || tradesState.loading || !tradesState.hasMore) return;
+  tradesState.loading = true;
+
+  const loadMoreEl = document.getElementById('trades-load-more');
+  if (loadMoreEl) loadMoreEl.textContent = '불러오는 중...';
+
+  const { apt, areaIdx, nextOffset } = tradesState;
+  const at = (apt.area_types || [])[areaIdx];
+  if (!at) return;
+
+  try {
+    const params = new URLSearchParams({
+      district: apt.district,
+      apt_name: apt.name,
+      apt_dong: apt.dong,
+      area_key: at.area_key,
+      offset: nextOffset,
+      count: 6,
+    });
+    const res  = await fetch(`/api/more-trades?${params}`);
+    const data = await res.json();
+
+    const tbody = document.getElementById('trades-tbody');
+    if (tbody && data.trades?.length) {
+      tbody.insertAdjacentHTML('beforeend', tradeRows(data.trades));
+    }
+
+    tradesState.nextOffset = data.next_offset ?? nextOffset + 6;
+    tradesState.hasMore    = data.has_more ?? false;
+    tradesState.loading    = false;
+
+    if (loadMoreEl) {
+      loadMoreEl.textContent = tradesState.hasMore ? '스크롤하여 더 보기' : '';
+      if (!tradesState.hasMore) loadMoreEl.style.display = 'none';
+    }
+  } catch (e) {
+    tradesState.loading = false;
+    if (loadMoreEl) loadMoreEl.textContent = '불러오기 실패';
+  }
 }
 
 // ── 차트 상태 ──────────────────────────────────────────────
@@ -1200,8 +1516,12 @@ function renderChart(allTrades) {
   const wrap   = document.getElementById('sheet-chart-wrap');
   if (sheetChart) { sheetChart.destroy(); sheetChart = null; }
 
-  // 매매만, 날짜 오름차순
-  let trades = allTrades.filter(t => t.trade_type === '매매').reverse();
+  // 매매만, 날짜 오름차순, 최근 6개월만
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 6);
+  let trades = allTrades
+    .filter(t => t.trade_type === '매매' && parseTradeDate(t) >= cutoff)
+    .reverse();
 
   const summaryEl = document.getElementById('chart-summary');
   const statsEl   = document.getElementById('chart-stats');
@@ -1353,44 +1673,127 @@ function showBadge(text) {
 }
 
 function refreshData() {
-  if (isBusy) return;
-  // 캐시 삭제 후 재로드
+  // 서버 캐시 + 세션 메모리 캐시 전체 초기화 후 재로드
+  const districts = [...loadedDistricts];
+  loadedDistricts.clear();
+  districts.forEach(d => delete districtMemCache[d]);
   fetch('/api/cache', { method: 'DELETE' })
-    .then(() => loadApartments(currentDistrict));
+    .then(() => loadVisibleDistricts());
 }
 
-// ── 바텀시트 스와이프 닫기 (핸들 영역만) ──────────────────
+// ── 바텀시트 스와이프 닫기 (핸들 + 헤더 영역) ──────────────
 (function initSwipe() {
+  const sheet  = document.getElementById('sheet');
   const handle = document.getElementById('sheet-handle');
-  let startY = 0;
+  const header = document.getElementById('sheet-header');
+  let startY = 0, startScrollTop = 0;
   let dragging = false;
-  handle.addEventListener('touchstart', e => {
+
+  function onTouchStart(e) {
     startY = e.touches[0].clientY;
+    startScrollTop = sheet.scrollTop || 0;
     dragging = true;
+  }
+
+  handle.addEventListener('touchstart', onTouchStart, { passive: true });
+  header.addEventListener('touchstart', onTouchStart, { passive: true });
+
+  document.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    // 시트가 맨 위에 있을 때만 드래그 피드백 (선택사항)
   }, { passive: true });
+
   document.addEventListener('touchend', e => {
     if (!dragging) return;
     dragging = false;
     const dy = e.changedTouches[0].clientY - startY;
-    if (dy > 40) closeSheet();
+    if (dy > 50) closeSheet();
   }, { passive: true });
 })();
 
+// ── 역지오코딩으로 구/시 + 동 판별 ────────────────────────
+// Naver reverseGeocode 응답: res.v2.results[0].region.area2.name = "용인시 수지구"
+//                                                       area3.name = "신봉동"
+function detectLocationByReverseGeocode(latlng) {
+  return new Promise(resolve => {
+    if (!window.naver?.maps?.Service?.reverseGeocode) { resolve(null); return; }
+    naver.maps.Service.reverseGeocode(
+      { coords: latlng, orders: [naver.maps.Service.OrderType.ADDR] },
+      (status, res) => {
+        if (status !== naver.maps.Service.Status.OK) { resolve(null); return; }
+        // results 배열에서 area2(시군구), area3(동) 추출
+        const result = res.v2?.results?.[0];
+        const area2  = result?.region?.area2?.name || ''; // e.g. "용인시 수지구"
+        const area3  = result?.region?.area3?.name || ''; // e.g. "신봉동"
+
+        const GEO_NAME_MAP = { '인천중구': '중구', '인천동구': '동구', '인천서구': '서구' };
+        for (const [region, data] of Object.entries(REGION_DATA)) {
+          for (const district of data.districts) {
+            const search = GEO_NAME_MAP[district] || district;
+            if (area2.includes(search)) {
+              resolve({ region, district, dong: area3 });
+              return;
+            }
+          }
+        }
+        resolve(null);
+      }
+    );
+  });
+}
+
+let myLocationDong = ''; // 시작 시 역지오코딩으로 감지한 내 위치 동
+
 // ── 시작 ───────────────────────────────────────────────────
 document.getElementById('sheet-close').addEventListener('click', closeSheet);
+
+// 거래 리스트 스크롤 감지 → 더 불러오기
+document.getElementById('sheet-trades').addEventListener('scroll', () => {
+  const el = document.getElementById('sheet-trades');
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
+    loadMoreTrades();
+  }
+}, { passive: true });
 
 async function startApp() {
   initMap();
   buildRegionTabs();
   buildDistrictBar();
   buildFilterBar();
-  // geocoder가 비동기로 로드되므로 준비될 때까지 대기
-  try {
-    await waitForGeocoder(10000);
-  } catch(e) {
-    console.warn('geocoder 로드 실패 — 좌표 조회 불가:', e);
+
+  // GPS + geocoder 준비를 병렬로 처리
+  const [gpsResult] = await Promise.all([
+    // GPS: 내 위치 이동 (geocoder 없이도 지도 이동은 가능)
+    new Promise(resolve => {
+      if (!navigator.geolocation) { resolve(null); return; }
+      navigator.geolocation.getCurrentPosition(pos => {
+        map.setCenter(new naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude));
+        map.setZoom(15);
+        resolve(pos);
+      }, () => resolve(null), { timeout: 5000 });
+    }),
+    // geocoder 준비
+    waitForGeocoder(10000).catch(() => {}),
+  ]);
+
+  // 즉시 현재 화면의 구 로딩 시작
+  if (map.getZoom() >= ZOOM_CLUSTER) loadVisibleDistricts();
+
+  // geocoder 준비됐으면 역지오코딩으로 정확한 구/동 판별
+  if (gpsResult && window.naver?.maps?.Service?.reverseGeocode) {
+    const latlng = new naver.maps.LatLng(gpsResult.coords.latitude, gpsResult.coords.longitude);
+    const found  = await detectLocationByReverseGeocode(latlng);
+    if (found) {
+      currentRegion   = found.region;
+      currentDistrict = found.district;
+      myLocationDong  = found.dong;
+      document.querySelectorAll('.rtab').forEach(b =>
+        b.classList.toggle('active', b.dataset.region === currentRegion));
+      buildDistrictBar();
+      // 구가 바뀌었으면 해당 구 로딩 (아직 안 됐을 수 있음)
+      loadVisibleDistricts();
+    }
   }
-  loadApartments(currentDistrict);
 }
 
 startApp();
