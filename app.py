@@ -162,6 +162,21 @@ def get_recent_deal_yms(count: int = 3) -> list:
     return result
 
 
+def aggregate_monthly_trade_counts(rows: list, recent_count: int = 12) -> dict:
+    from collections import Counter
+
+    monthly_counter: Counter = Counter()
+    for row in rows:
+        if row.get("_type") != "매매":
+            continue
+        ym = f"{row.get('dealYear', '')}{str(row.get('dealMonth', '')).zfill(2)}"
+        if len(ym) == 6:
+            monthly_counter[ym] += 1
+
+    recent_yms = sorted(monthly_counter.keys(), reverse=True)[:recent_count]
+    return {ym: monthly_counter[ym] for ym in recent_yms}
+
+
 def xml_items(text: str) -> list:
     """API 응답 XML에서 <item> 목록을 파싱해 딕셔너리 리스트로 반환"""
     try:
@@ -288,7 +303,12 @@ async def get_markers(
         {k: v for k, v in apt.items() if k != "area_types"}
         for apt in result.get("apartments", [])
     ]
-    return {"apartments": markers, "cached": result.get("cached"), "full": result.get("full")}
+    return {
+        "apartments": markers,
+        "cached": result.get("cached"),
+        "full": result.get("full"),
+        "monthly_trades": result.get("monthly_trades", {}),
+    }
 
 
 @app.get("/api/apt-trades")
@@ -352,8 +372,8 @@ async def get_apartments(
             _ym = f"{_row.get('dealYear','')}{str(_row.get('dealMonth','')).zfill(2)}"
             if len(_ym) == 6:
                 _monthly_counter[_ym] += 1
-    # 최근 3개월만 반환
-    _recent_yms = sorted(_monthly_counter.keys(), reverse=True)[:3]
+    # 최근 12개월 반환
+    _recent_yms = sorted(_monthly_counter.keys(), reverse=True)[:12]
     monthly_trades = {ym: _monthly_counter[ym] for ym in _recent_yms}
 
     # 단지명+동 기준으로 그룹핑, 면적(㎡ 반올림)별로 세분화
@@ -560,6 +580,9 @@ KB_INDEX_URL = "https://data-api.kbland.kr/bfmstat/weekMnthlyHuseTrnd/priceIndex
 _kb_index_cache: dict | None = None
 _kb_index_cached_at: datetime | None = None
 KB_INDEX_TTL_HOURS = 12
+_district_volume_cache: dict[str, dict] = {}
+_district_volume_cached_at: dict[str, datetime] = {}
+DISTRICT_VOLUME_TTL_HOURS = 12
 
 # 지역명 정규화: KB 응답의 지역명 → 우리 district 키로 매핑
 # 인천은 "중구/동구/서구"를 서울과 구분하기 위해 "인천중구/인천동구/인천서구"로 변환
@@ -650,6 +673,39 @@ async def get_kb_index():
     result = {"districts": index_map}
     _kb_index_cache = result
     _kb_index_cached_at = now
+    return result
+
+
+@app.get("/api/district-volume")
+async def get_district_volume(
+    district: str = Query(...),
+):
+    """구/시 단위 최근 24개월 매매 거래량"""
+    if district not in DISTRICTS:
+        return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
+
+    now = datetime.now()
+    cached = _district_volume_cache.get(district)
+    cached_at = _district_volume_cached_at.get(district)
+    if cached is not None and cached_at is not None:
+        age = (now - cached_at).total_seconds() / 3600
+        if age < DISTRICT_VOLUME_TTL_HOURS:
+            return cached
+
+    import asyncio
+
+    lawd_codes = DISTRICTS[district]
+    deal_yms = get_recent_deal_yms(24)
+    tasks = [fetch_transactions(code, ym) for code in lawd_codes for ym in deal_yms]
+    results = await asyncio.gather(*tasks)
+    all_raw = [row for batch in results for row in batch]
+
+    result = {
+        "district": district,
+        "monthly_trades": aggregate_monthly_trade_counts(all_raw, recent_count=24),
+    }
+    _district_volume_cache[district] = result
+    _district_volume_cached_at[district] = now
     return result
 
 
@@ -1126,6 +1182,8 @@ async def get_school_detail(
 async def clear_cache():
     _cache["apartments"].clear()
     _raw_period_cache.clear()
+    _district_volume_cache.clear()
+    _district_volume_cached_at.clear()
     _school_detail_cache.clear()
     _school_meta_cache.clear()
     return {"message": "캐시 삭제"}
