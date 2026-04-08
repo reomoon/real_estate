@@ -323,18 +323,43 @@
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
+    #sheet-name-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 3px;
+      flex-wrap: wrap;
+    }
     #sheet-name {
       font-size: 17px;
       font-weight: 700;
       color: var(--dark);
-      margin-bottom: 3px;
+      flex-shrink: 0;
+    }
+    #sheet-detail {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+    .sheet-detail-addr {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .sheet-detail-chip {
+      font-size: 11px;
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 1px 5px;
+      white-space: nowrap;
+      color: #475569;
     }
     #sheet-meta {
       font-size: 12px;
       color: var(--gray);
       margin-bottom: 6px;
     }
-    /* 동 평균 비교 바 */
+    /* 구 평균 비교 바 */
     #sheet-dong-compare {
       display: flex;
       align-items: center;
@@ -399,10 +424,23 @@
       color: var(--gray);
       line-height: 1.3;
     }
+    .sheet-area-avg {
+      margin-top: 3px;
+      font-size: 11px;
+      color: #6366f1;
+      line-height: 1.3;
+    }
     #sheet-price-wrap {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    #sheet-price-main {
       display: flex;
       align-items: baseline;
       gap: 8px;
+      min-width: 0;
     }
     #sheet-price {
       font-size: 24px;
@@ -412,6 +450,13 @@
     #sheet-price-date {
       font-size: 11px;
       color: var(--gray);
+    }
+    #sheet-price-avg {
+      font-size: 12px;
+      font-weight: 700;
+      color: #475569;
+      white-space: nowrap;
+      text-align: right;
     }
     /* ── 차트 영역 ── */
     #sheet-chart-wrap {
@@ -483,6 +528,17 @@
     #volume-summary.visible { display: flex; }
     #chart-summary .sum-range,
     #volume-summary .sum-range { color: #010814; font-size: 11px; }
+    #chart-summary .sum-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 auto;
+      font-size: 11px;
+      font-weight: 700;
+      color: #334155;
+      white-space: nowrap;
+    }
+    #chart-summary .sum-meta .meta-item { white-space: nowrap; }
     #chart-summary .sum-change,
     #volume-summary .sum-change { margin-left: auto; font-weight: 700; font-size: 12px; }
     .sum-up   { color: #4f3232; }
@@ -490,7 +546,6 @@
     .sum-flat { color: #9ca3af; }
 
     /* 차트 하단 통계 */
-    #chart-stats,
     #volume-stats {
       display: flex;
       gap: 10px;
@@ -504,7 +559,6 @@
       border-radius: 12px;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
     }
-    #chart-stats .stat-item,
     #volume-stats .stat-item { white-space: nowrap; }
     .volume-list {
       padding: 8px 16px 16px;
@@ -699,6 +753,28 @@
     .district-tag .kb-idx .kb-up   { color: #fca5a5; }
     .district-tag .kb-idx .kb-down { color: #93c5fd; }
 
+    .region-tag {
+      background: #2d4577;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 800;
+      padding: 10px 18px;
+      border-radius: 24px;
+      white-space: nowrap;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(17,24,39,.28);
+      -webkit-tap-highlight-color: transparent;
+      text-align: center;
+      line-height: 1.25;
+    }
+    .region-tag .dt-count {
+      display: block;
+      font-size: 10px;
+      font-weight: 500;
+      opacity: .82;
+      margin-top: 2px;
+    }
+
     /* ── 동 클러스터 마커 ── */
     .dong-tag {
       background: #fff;
@@ -769,17 +845,71 @@
     #school-filter {
       position: relative;
     }
+    #btn-naver {
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1.5px solid #03c75a;
+      background: #fff;
+      font-size: 12px; font-weight: 700; color: #03c75a;
+      cursor: pointer;
+      white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #btn-naver.active { background: #3e7556; color: #fff; }
     #btn-volume {
       padding: 4px 10px;
       border-radius: 20px;
-      border: 1.5px solid #0f766e;
+      border: 1.5px solid #3e7556;
       background: #fff;
-      font-size: 12px; font-weight: 700; color: #0f766e;
+      font-size: 12px; font-weight: 700; color: #13534e;
       cursor: pointer;
       white-space: nowrap;
       -webkit-tap-highlight-color: transparent;
     }
     #btn-volume.active { background: #0f766e; color: #fff; }
+    /* 네이버 모드 마커 */
+    .price-tag.naver-mode { background: #379360;}
+    .price-tag.naver-mode::after { border-top-color: #379360;}
+    .price-tag .naver-cmp { font-size: 9px; font-weight: 500; opacity: .9; }
+    /* 네이버 매물 시트 */
+    #naver-sheet {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: #fff;
+      border-radius: 16px 16px 0 0;
+      box-shadow: 0 -4px 20px rgba(0,0,0,.12);
+      z-index: 600;
+      transform: translateY(100%);
+      transition: transform .3s ease;
+      max-height: 70vh;
+      display: flex; flex-direction: column;
+    }
+    #naver-sheet.open { transform: translateY(0); }
+    #naver-sheet-header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #naver-sheet-title { font-size: 15px; font-weight: 700; }
+    #naver-sheet-sub { font-size: 12px; color: var(--gray); margin-top: 2px; }
+    #naver-sheet-close {
+      position: absolute; top: 12px; right: 14px;
+      background: none; border: none; font-size: 18px; cursor: pointer; color: var(--gray);
+    }
+    #naver-sheet-list { overflow-y: auto; flex: 1; }
+    .naver-article {
+      display: flex; align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      text-decoration: none;
+      color: inherit;
+      gap: 10px;
+    }
+    .naver-article:active { background: #f8fafc; }
+    .naver-article-price { font-size: 15px; font-weight: 700; flex: 1; }
+    .naver-article-info { font-size: 12px; color: var(--gray); }
+    .naver-article-desc { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+    .naver-article-arrow { color: #cbd5e1; font-size: 14px; }
     #btn-school {
       padding: 4px 10px;
       border-radius: 20px;
@@ -791,31 +921,6 @@
       -webkit-tap-highlight-color: transparent;
     }
     #btn-school.active { background: #7c3aed; color: #fff; }
-    #school-panel {
-      position: absolute;
-      top: 38px;
-      right: 0;
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
-      box-shadow: 0 10px 24px rgba(0,0,0,.12);
-      padding: 10px 12px;
-      min-width: 118px;
-      display: none;
-      z-index: 520;
-    }
-    #school-panel.open { display: block; }
-    .school-check {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: #111827;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .school-check + .school-check { margin-top: 8px; }
-    .school-check input { accent-color: #7c3aed; }
 
     /* ── 학교 마커 ── */
     .school-marker {
@@ -968,15 +1073,14 @@
     </div>
   </div>
 <div id="top-actions">
+    <div id="naver-filter">
+      <button id="btn-naver" title="네이버 매물 보기">네이버 매물</button>
+    </div>
     <div id="volume-filter">
       <button id="btn-volume" title="거래량 보기">거래량</button>
     </div>
     <div id="school-filter">
       <button id="btn-school" title="학군 보기">학군</button>
-      <div id="school-panel">
-        <label class="school-check"><input type="checkbox" id="chk-middle" checked> 중학교</label>
-        <label class="school-check"><input type="checkbox" id="chk-high" checked> 고등학교</label>
-      </div>
     </div>
   </div>
 </div>
@@ -1016,12 +1120,25 @@
   <div id="volume-list"></div>
 </div>
 
+<!-- 네이버 매물 시트 -->
+<div id="naver-sheet">
+  <div id="naver-sheet-header">
+    <div id="naver-sheet-title"></div>
+    <div id="naver-sheet-sub"></div>
+    <button id="naver-sheet-close">✕</button>
+  </div>
+  <div id="naver-sheet-list"></div>
+</div>
+
 <!-- 하단 시트 (상세) -->
 <div id="sheet">
   <div id="sheet-handle"></div>
   <button id="sheet-close">✕</button>
   <div id="sheet-header">
-    <div id="sheet-name"></div>
+    <div id="sheet-name-row">
+      <div id="sheet-name"></div>
+      <div id="sheet-detail"></div>
+    </div>
     <div id="sheet-meta"></div>
     <div id="sheet-dong-compare"></div>
   </div>
@@ -1029,15 +1146,17 @@
     <!-- 평형 드롭다운 -->
     <div id="sheet-area-list"></div>
     <div id="sheet-price-wrap">
-      <div id="sheet-price"></div>
-      <div id="sheet-price-date"></div>
+      <div id="sheet-price-main">
+        <div id="sheet-price"></div>
+        <div id="sheet-price-date"></div>
+      </div>
+      <div id="sheet-price-avg"></div>
     </div>
   </div>
   <!-- 가격 추이 차트 -->
   <div id="sheet-chart-wrap">
     <div id="chart-summary"></div>
     <canvas id="sheet-chart" height="90"></canvas>
-    <div id="chart-stats"></div>
   </div>
   <div id="sheet-trades"></div>
 </div>
@@ -1068,14 +1187,21 @@ const REGION_DATA = {
   },
   '경기': {
     mapCenter: [37.4138, 127.5183], clusterZoom: 9,
-    districts: ['수원시','성남시','고양시','용인시','부천시','안산시','안양시','남양주시',
-                '화성시','평택시','의정부시','시흥시','파주시','광명시','하남시','김포시',
-                '광주시','군포시','오산시','이천시','양주시','안성시','구리시','의왕시',
-                '포천시','여주시','동두천시','과천시','연천군','가평군','양평군'],
+    districts: ['장안구','권선구','팔달구','영통구','수정구','중원구','분당구','덕양구',
+                '일산동구','일산서구','처인구','기흥구','수지구','상록구','단원구','만안구',
+                '동안구','부천시','남양주시','만세구','효행구','병점구','동탄구','평택시',
+                '의정부시','시흥시','파주시','광명시','하남시','김포시','광주시','군포시',
+                '오산시','이천시','양주시','안성시','구리시','의왕시','포천시','여주시',
+                '동두천시','과천시','연천군','가평군','양평군'],
     centers: {
-      '수원시':[37.2636,127.0286],'성남시':[37.4201,127.1267],'고양시':[37.6584,126.8320],
-      '용인시':[37.3236,127.1000],'부천시':[37.5036,126.7660],'안산시':[37.3219,126.8309],
-      '안양시':[37.3943,126.9568],'남양주시':[37.6360,127.2160],'화성시':[37.1996,126.8312],
+      '장안구':[37.3030,127.0102],'권선구':[37.2579,126.9713],'팔달구':[37.2804,127.0193],
+      '영통구':[37.2596,127.0464],'수정구':[37.4505,127.1458],'중원구':[37.4301,127.1377],
+      '분당구':[37.3828,127.1185],'덕양구':[37.6375,126.8320],'일산동구':[37.6588,126.7776],
+      '일산서구':[37.6771,126.7445],'처인구':[37.2343,127.2024],'기흥구':[37.2804,127.1151],
+      '수지구':[37.3220,127.0979],'상록구':[37.3007,126.8468],'단원구':[37.3215,126.8151],
+      '만안구':[37.3927,126.9248],'동안구':[37.3927,126.9536],'부천시':[37.5036,126.7660],
+      '남양주시':[37.6360,127.2160],'만세구':[37.1660,126.8312],'효행구':[37.2060,126.9550],
+      '병점구':[37.2070,127.0330],'동탄구':[37.2007,127.0930],
       '평택시':[36.9921,127.1128],'의정부시':[37.7382,127.0337],'시흥시':[37.3800,126.8026],
       '파주시':[37.7601,126.7801],'광명시':[37.4789,126.8644],'하남시':[37.5391,127.2148],
       '김포시':[37.6154,126.7156],'광주시':[37.4296,127.2553],'군포시':[37.3615,126.9352],
@@ -1102,8 +1228,13 @@ const REGION_DATA = {
 const DISTRICT_CENTERS = Object.values(REGION_DATA)
   .reduce((acc, r) => Object.assign(acc, r.centers), {});
 
+const REGION_CENTERS = Object.fromEntries(
+  Object.entries(REGION_DATA).map(([region, data]) => [region, data.mapCenter])
+);
+
+const ZOOM_REGION  = 10; // 이 줌 미만: 서울/경기/인천 광역 마커
 const ZOOM_CLUSTER = 13; // 이 줌 미만: 구 클러스터
-const ZOOM_DONG    = 15; // 이 줌 미만: 동 클러스터, 이상: 단지 마커
+const ZOOM_DONG    = 14; // 이 줌 미만: 구 클러스터, 이상: 단지 마커
 
 let map = null;
 let markers = [];           // 구/동 클러스터 마커
@@ -1160,7 +1291,6 @@ let schoolGeocodeCache = {}; // address → {lat, lng}
 let schoolDetailCache = {};
 let schoolInfoWindow = null;
 let lastSchoolDistrict = '';
-let schoolTypeFilters = { middle: true, high: true };
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -1195,9 +1325,15 @@ function renderSchoolPopup(school, detail, loading = false) {
       rows.push(`<div class="row">과고+외고 비율: ${detail.special_purpose_rate}%</div>`);
     }
   } else {
-    rows.push(`<div class="row">대학: ${detail.university_count ?? 0}명</div>`);
-    rows.push(`<div class="row">전문대학: ${detail.junior_college_count ?? 0}명</div>`);
-    rows.push(`<div class="row">국외진학: ${detail.overseas_count ?? 0}명</div>`);
+    if (detail.seoul_national_count != null) {
+      rows.push(`<div class="row">수시: ${detail.seoul_national_early_count ?? 0}명</div>`);
+      rows.push(`<div class="row">정시: ${detail.seoul_national_regular_count ?? 0}명</div>`);
+      rows.push(`<div class="row">합계: ${detail.seoul_national_count ?? 0}명</div>`);
+    } else {
+      rows.push(`<div class="row">대학: ${detail.university_count ?? 0}명</div>`);
+      rows.push(`<div class="row">전문대학: ${detail.junior_college_count ?? 0}명</div>`);
+      rows.push(`<div class="row">국외진학: ${detail.overseas_count ?? 0}명</div>`);
+    }
   }
   if (detail.message) {
     rows.push(`<div class="note">${escapeHtml(detail.message)}</div>`);
@@ -1233,12 +1369,7 @@ async function hydrateSchoolMarker(school, el) {
 }
 
 function syncSchoolFilterUI() {
-  schoolVisible = schoolTypeFilters.middle || schoolTypeFilters.high;
   document.getElementById('btn-school').classList.toggle('active', schoolVisible);
-}
-
-function closeSchoolPanel() {
-  document.getElementById('school-panel').classList.remove('open');
 }
 
 function syncHouseholdFilterUI() {
@@ -1265,13 +1396,35 @@ function positionHouseholdPanel() {
 
 function hideSchoolMarkers() {
   schoolMarkers.forEach(m => m.setMap(null));
+  schoolMarkers = [];
   if (schoolInfoWindow) schoolInfoWindow.close();
+}
+
+function hideAptMarkers() {
+  _aptPool.forEach(({ marker }) => marker.setMap(null));
+  if (activeMarkerEl) {
+    activeMarkerEl.classList.remove('active');
+    activeMarkerEl = null;
+  }
+  activeAptKey = null;
 }
 
 document.getElementById('btn-school').addEventListener('click', (e) => {
   e.stopPropagation();
-  const panel = document.getElementById('school-panel');
-  panel.classList.toggle('open');
+  schoolVisible = !schoolVisible;
+  syncSchoolFilterUI();
+  closeSheet();
+  if (schoolVisible) {
+    volumeVisible = false;
+    syncVolumeUI();
+    closeVolumeSheet();
+    hideAptMarkers();
+    lastSchoolDistrict = currentDistrict;
+    loadSchoolMarkers();
+  } else {
+    hideSchoolMarkers();
+    updateVisibleMarkers();
+  }
 });
 
 document.getElementById('btn-volume').addEventListener('click', () => {
@@ -1298,34 +1451,7 @@ document.getElementById('btn-household').addEventListener('click', (e) => {
   panel.classList.toggle('open');
 });
 
-document.getElementById('chk-middle').addEventListener('change', (e) => {
-  schoolTypeFilters.middle = e.target.checked;
-  syncSchoolFilterUI();
-  if (schoolVisible) {
-    lastSchoolDistrict = currentDistrict;
-    loadSchoolMarkers();
-  } else {
-    schoolMarkers.forEach(m => m.setMap(null));
-    schoolMarkers = [];
-    if (schoolInfoWindow) schoolInfoWindow.close();
-  }
-});
-
-document.getElementById('chk-high').addEventListener('change', (e) => {
-  schoolTypeFilters.high = e.target.checked;
-  syncSchoolFilterUI();
-  if (schoolVisible) {
-    lastSchoolDistrict = currentDistrict;
-    loadSchoolMarkers();
-  } else {
-    schoolMarkers.forEach(m => m.setMap(null));
-    schoolMarkers = [];
-    if (schoolInfoWindow) schoolInfoWindow.close();
-  }
-});
-
 document.addEventListener('click', (e) => {
-  if (!document.getElementById('school-filter').contains(e.target)) closeSchoolPanel();
   if (!document.getElementById('apt-filter').contains(e.target)) closeHouseholdPanel();
 });
 
@@ -1355,8 +1481,8 @@ async function loadSchoolMarkers() {
     fetch(`/api/schools?district=${encodeURIComponent(currentDistrict)}&school_type=${encodeURIComponent('고등학교')}`).then(r => r.json()),
   ]);
   const schools = [
-    ...(schoolTypeFilters.middle ? (midRes.schools || []) : []),
-    ...(schoolTypeFilters.high ? (highRes.schools || []) : []),
+    ...(midRes.schools || []),
+    ...(highRes.schools || []),
   ];
 
   for (const school of schools) {
@@ -1795,16 +1921,60 @@ async function geocodeBackground(district) {
   }
 }
 
-// ── 줌 레벨에 따라 구/동 클러스터 or 단지 마커 표시 ─────────
+// ── 줌 레벨에 따라 광역/구 클러스터 또는 단지 마커 표시 ─────
 function updateVisibleMarkers() {
   const z = map.getZoom();
-  if (z < ZOOM_CLUSTER) {
-    showDistrictMarkers();
+  if (z < ZOOM_REGION) {
+    showRegionMarkers();
   } else if (z < ZOOM_DONG) {
-    showDongMarkers();
+    showDistrictMarkers();
+  } else if (schoolVisible) {
+    clearMarkers();
+    hideAptMarkers();
+    closeSheet();
   } else if (allGeocodedApts.length) {
     showAptMarkers();
   }
+}
+
+function showRegionMarkers() {
+  clearMarkers();
+  closeSheet();
+  closeVolumeSheet();
+  const bounds = map.getBounds();
+
+  Object.entries(REGION_DATA).forEach(([region, data]) => {
+    const center = REGION_CENTERS[region];
+    if (!center) return;
+    const pos = new naver.maps.LatLng(center[0], center[1]);
+    if (!bounds.hasPoint(pos)) return;
+
+    const el = document.createElement('div');
+    el.className = 'region-tag';
+    el.innerHTML = `${region}<span class="dt-count">${data.districts.length}개 구/시</span>`;
+
+    const marker = new naver.maps.Marker({
+      position: pos,
+      map,
+      icon: { content: el, anchor: new naver.maps.Point(el.offsetWidth / 2 || 52, el.offsetHeight / 2 || 28) },
+      zIndex: 90,
+    });
+
+    naver.maps.Event.addListener(marker, 'click', () => {
+      currentRegion = region;
+      currentDistrict = data.districts[0];
+      userSelectedDistrict = false;
+      document.querySelectorAll('.rtab').forEach(b =>
+        b.classList.toggle('active', b.dataset.region === currentRegion));
+      buildDistrictBar();
+      map.setCenter(pos);
+      map.setZoom(Math.max(data.clusterZoom + 1, ZOOM_REGION));
+    });
+
+    markers.push(marker);
+  });
+
+  showBadge(`서울 · 경기 · 인천 중 지역을 선택하세요`);
 }
 
 function showDongMarkers() {
@@ -1869,7 +2039,10 @@ function showAptMarkers() {
     if (!entry) {
       // 풀에 없으면 새로 생성
       entry = createAptMarker(apt, pos);
+      entry.apt = apt;
       _aptPool.set(apt.key, entry);
+      // 네이버 모드 활성 중이면 새 마커에도 오버레이 적용
+      if (naverMode) applyNaverMode();
     }
     entry.marker.setMap(inBounds ? map : null);
     if (inBounds) count++;
@@ -1961,10 +2134,14 @@ function createAptMarker(apt, pos) {
     el.classList.add('active');
     activeMarkerEl = el;
     activeAptKey = apt.key;
-    openSheet(apt);
+    if (naverMode) {
+      openNaverSheet(apt);
+    } else {
+      openSheet(apt);
+    }
   });
 
-  return { marker, el };
+  return { marker, el, apt };
 }
 
 function clearMarkers() {
@@ -1975,6 +2152,85 @@ function clearMarkers() {
   _aptPool.forEach(({ marker }) => marker.setMap(null));
   activeMarkerEl = null;
 }
+
+// ── 네이버 매물 모드 ──────────────────────────────────────
+let naverMode = false;
+
+function syncNaverUI() {
+  document.getElementById('btn-naver').classList.toggle('active', naverMode);
+}
+
+function closeNaverSheet() {
+  document.getElementById('naver-sheet').classList.remove('open');
+}
+
+function naverSearchUrl(apt) {
+  return `https://new.land.naver.com/search?keyword=${encodeURIComponent(apt.name)}`;
+}
+
+function applyNaverMode() {
+  _aptPool.forEach(({ el, apt }) => {
+    if (!apt) return;
+    const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
+    el.className = 'price-tag naver-mode' + (apt.is_champion ? ' champion' : '');
+    el.innerHTML = `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub naver-cmp">N 매물보기</span>`;
+  });
+}
+
+function revertNaverMode() {
+  _aptPool.forEach(({ el, apt }) => {
+    if (!apt) return;
+    const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
+    const built = apt.built_year ? `<span class="built">${apt.built_year}년 입주</span>` : '';
+    el.className = 'price-tag' + (apt.is_champion ? ' champion' : '');
+    el.innerHTML = `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub">${apt.main_area_label}</span>${built}`;
+  });
+}
+
+function openNaverSheet(apt) {
+  const areaKey = parseInt(apt.main_area_label) || 84;
+  const pref = REGION_PREFIX[apt.region || currentRegion] || '서울특별시';
+  const dist = DISTRICT_GEO_NAME[apt.district] || apt.district;
+  const searchUrl = naverSearchUrl(apt);
+  const dongSearchUrl = `https://new.land.naver.com/search?keyword=${encodeURIComponent(pref + ' ' + dist + ' ' + apt.dong)}`;
+
+  document.getElementById('naver-sheet-title').textContent = apt.name;
+  document.getElementById('naver-sheet-sub').textContent = `실거래 ${apt.price_display} · ${apt.main_area_label}`;
+  document.getElementById('naver-sheet-list').innerHTML = `
+    <a class="naver-article" href="${searchUrl}" target="_blank" rel="noopener">
+      <div style="flex:1">
+        <div class="naver-article-price">네이버 부동산에서 "${apt.name}" 매물 보기</div>
+        <div class="naver-article-info">${apt.main_area_label} 전체 매물 검색</div>
+      </div>
+      <span class="naver-article-arrow">›</span>
+    </a>
+    <a class="naver-article" href="${dongSearchUrl}" target="_blank" rel="noopener">
+      <div style="flex:1">
+        <div class="naver-article-price">${dist} ${apt.dong} 전체 매물 보기</div>
+        <div class="naver-article-info">동 단위 매물 검색</div>
+      </div>
+      <span class="naver-article-arrow">›</span>
+    </a>
+  `;
+  document.getElementById('naver-sheet').classList.add('open');
+}
+
+document.getElementById('naver-sheet-close').addEventListener('click', closeNaverSheet);
+
+document.getElementById('btn-naver').addEventListener('click', async () => {
+  naverMode = !naverMode;
+  syncNaverUI();
+  closeNaverSheet();
+  closeSheet();
+  if (naverMode) {
+    volumeVisible = false;
+    syncVolumeUI();
+    closeVolumeSheet();
+    await applyNaverMode();
+  } else {
+    revertNaverMode();
+  }
+});
 
 // ── 하단 시트 ──────────────────────────────────────────────
 let currentApt = null;
@@ -1989,27 +2245,32 @@ async function openSheet(apt) {
   const built = apt.built_year ? `${apt.built_year}년 · ` : '';
   document.getElementById('sheet-meta').textContent = `${built}${apt.dong}`;
 
-  // 동 평균 비교
-  const cmp = document.getElementById('sheet-dong-compare');
-  if (apt.dong_avg && apt.dong_apt_count > 1) {
-    const diff = apt.dong_diff;
-    const cls = diff > 0 ? 'diff-up' : diff < 0 ? 'diff-down' : 'diff-same';
-    const sign = diff > 0 ? '▲' : diff < 0 ? '▼' : '=';
-    const diffTxt = diff === 0 ? '평균과 동일' : `평균보다 ${apt.dong_diff_display} ${diff > 0 ? '높음' : '낮음'}`;
-    cmp.style.display = 'flex';
-    cmp.innerHTML = `
-      <span class="avg-label">${apt.dong} 평균 (${apt.dong_apt_count}개 단지)</span>
-      <span class="avg-price">${apt.dong_avg_display}</span>
-      <span class="diff-badge ${cls}">${sign} ${diffTxt}</span>
-    `;
-  } else {
-    cmp.style.display = 'none';
-  }
+  // 주소 구성 및 상세정보 로딩
+  const detailEl = document.getElementById('sheet-detail');
+  const addr = apt.jibun ? `${apt.dong} ${apt.jibun}` : apt.dong;
+  detailEl.innerHTML = `<span class="sheet-detail-addr">${addr}</span>`;
+  fetch(`/api/apt-detail?key=${encodeURIComponent(apt.key)}&district=${encodeURIComponent(apt.district)}`)
+    .then(r => r.json())
+    .then(d => {
+      const chips = [];
+      if (d.hhld_cnt)    chips.push(`${parseInt(d.hhld_cnt).toLocaleString()}세대`);
+      if (d.occ_display) chips.push(d.occ_display);
+      if (d.vl_rat)      chips.push(`용적률 ${d.vl_rat}%`);
+      if (d.bc_rat)      chips.push(`건폐율 ${d.bc_rat}%`);
+      chips.forEach(c => {
+        detailEl.innerHTML += `<span class="sheet-detail-chip">${c}</span>`;
+      });
+    })
+    .catch(() => {});
+
+  // 구 평균 비교는 renderSheetArea에서 평형 선택 후 처리
+  document.getElementById('sheet-dong-compare').style.display = 'none';
 
   // 로딩 상태 표시 후 시트 오픈
   document.getElementById('sheet-area-list').innerHTML = '<button class="sheet-area-btn active" type="button"><div class="sheet-area-main">불러오는 중...</div></button>';
   document.getElementById('sheet-price').textContent = '...';
   document.getElementById('sheet-price-date').textContent = '';
+  document.getElementById('sheet-price-avg').textContent = '';
   document.getElementById('sheet-chart-wrap').style.visibility = 'hidden';
   document.getElementById('sheet-trades').innerHTML =
     '<div style="padding:24px;text-align:center;color:#9ca3af;font-size:13px">거래내역 불러오는 중...</div>';
@@ -2051,6 +2312,7 @@ function renderSheetDetails(apt) {
     btn.innerHTML = `
       <div class="sheet-area-main">${at.label} · 최근 ${at.latest_price_display}</div>
       <div class="sheet-area-sub">${at.latest_date}</div>
+      ${at.district_avg_display ? `<div class="sheet-area-avg">구 평균 ${at.district_avg_display}</div>` : ''}
     `;
     btn.addEventListener('click', () => renderSheetArea(apt, i));
     list.appendChild(btn);
@@ -2067,6 +2329,35 @@ function renderSheetArea(apt, idx) {
 
   document.getElementById('sheet-price').textContent = at.latest_price_display;
   document.getElementById('sheet-price-date').textContent = at.latest_date;
+  document.getElementById('sheet-price-avg').textContent = '';
+
+  // 평형별 구 평균 비교 업데이트
+  const cmp = document.getElementById('sheet-dong-compare');
+  if (at.district_avg && at.district_avg_count > 1) {
+    const diff = at.latest_price - at.district_avg;
+    const cls = diff > 0 ? 'diff-up' : diff < 0 ? 'diff-down' : 'diff-same';
+    const sign = diff > 0 ? '▲' : diff < 0 ? '▼' : '=';
+    const diffTxt = diff === 0 ? '평균과 동일' : `평균보다 ${fmtPrice(Math.abs(diff))} ${diff > 0 ? '높음' : '낮음'}`;
+    cmp.style.display = 'flex';
+    cmp.innerHTML = `
+      <span class="avg-label">${apt.district} ${at.label} 평균 (${at.district_avg_count}개 단지)</span>
+      <span class="avg-price">${at.district_avg_display}</span>
+      <span class="diff-badge ${cls}">${sign} ${diffTxt}</span>
+    `;
+  } else if (apt.district_avg && apt.district_apt_count > 1) {
+    const diff = apt.district_diff;
+    const cls = diff > 0 ? 'diff-up' : diff < 0 ? 'diff-down' : 'diff-same';
+    const sign = diff > 0 ? '▲' : diff < 0 ? '▼' : '=';
+    const diffTxt = diff === 0 ? '평균과 동일' : `평균보다 ${apt.district_diff_display} ${diff > 0 ? '높음' : '낮음'}`;
+    cmp.style.display = 'flex';
+    cmp.innerHTML = `
+      <span class="avg-label">${apt.district} 평균 (${apt.district_apt_count}개 단지)</span>
+      <span class="avg-price">${apt.district_avg_display}</span>
+      <span class="diff-badge ${cls}">${sign} ${diffTxt}</span>
+    `;
+  } else {
+    cmp.style.display = 'none';
+  }
 
   currentChartTrades = at.trades;
   renderChart(at.trades);
@@ -2255,7 +2546,12 @@ async function openDistrictVolumeSheet(districtName) {
         },
         scales: {
           x: { grid: { display: false }, ticks: { font: { size: 9 }, autoSkip: false, maxRotation: 0, minRotation: 0 } },
-          y: { beginAtZero: true, ticks: { precision: 0, font: { size: 10 } }, grid: { color: '#f3f4f6' } },
+          y: {
+            beginAtZero: true,
+            ticks: { display: false, precision: 0, font: { size: 10 } },
+            border: { display: false },
+            grid: { color: '#f3f4f6', drawTicks: false },
+          },
         },
       },
     });
@@ -2363,12 +2659,10 @@ function renderChart(allTrades) {
     .reverse();
 
   const summaryEl = document.getElementById('chart-summary');
-  const statsEl   = document.getElementById('chart-stats');
 
   if (!trades.length) {
     wrap.style.display = 'none';
     summaryEl.classList.remove('visible');
-    statsEl.innerHTML = '';
     return;
   }
   wrap.style.display = 'block';
@@ -2388,15 +2682,18 @@ function renderChart(allTrades) {
   const pct  = first.price ? ((priceDiff / first.price) * 100).toFixed(1) : 0;
   const cls  = priceDiff > 0 ? 'sum-up' : priceDiff < 0 ? 'sum-down' : 'sum-flat';
   const sign = priceDiff > 0 ? '+' : '';
+  const maxVal = Math.max(...prices), minVal = Math.min(...prices);
+  const maxIdx = prices.indexOf(maxVal), minIdx = prices.indexOf(minVal);
   summaryEl.innerHTML = `
     <span class="sum-range">${firstY}.${firstMo} ~ ${lastY}.${lastMo} (${durTxt.trim()})</span>
+    <span class="sum-meta">
+      <span class="meta-item">실거래 ${trades.length}건</span>
+      <span class="meta-item">최고 ${fmtPrice(maxVal)}</span>
+      <span class="meta-item">최저 ${fmtPrice(minVal)}</span>
+    </span>
     <span class="sum-change ${cls}">${sign}${fmtPrice(Math.abs(priceDiff))} (${sign}${pct}%)</span>
   `;
   summaryEl.classList.add('visible');
-
-  // 최고/최저
-  const maxVal = Math.max(...prices), minVal = Math.min(...prices);
-  const maxIdx = prices.indexOf(maxVal), minIdx = prices.indexOf(minVal);
 
   const pointColors = prices.map((_, i) =>
     i === maxIdx ? '#ef4444' : i === minIdx ? '#3b82f6' : '#6366f1');
@@ -2482,12 +2779,6 @@ function renderChart(allTrades) {
     }
   });
 
-  statsEl.innerHTML = `
-    <span class="stat-item">실거래 ${trades.length}건</span>
-    <span class="stat-item">최고 ${fmtPrice(maxVal)}</span>
-    <span class="stat-item">최저 ${fmtPrice(minVal)}</span>
-    <span class="stat-item" style="color:#f59e0b">━ 180일선</span>
-  `;
 }
 
 function closeSheet() {

@@ -12,6 +12,7 @@ import os
 import json
 import re
 import html as html_lib
+from zipfile import ZipFile
 from dotenv import load_dotenv
 
 # .env 파일에서 환경변수 로드
@@ -31,7 +32,7 @@ NAVER_MAPS_KEY = os.getenv("NAVER_MAPS_KEY")
 TRADE_BASE = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
 RENT_BASE  = "https://apis.data.go.kr/1613000/RTMSDataSvcAptRentDev/getRTMSDataSvcAptRentDev"
 
-# 지역별 법정동 코드 (값은 리스트 — 수원시처럼 여러 구를 가진 시는 복수 코드)
+# 지역별 법정동 코드
 DISTRICTS: dict[str, list[str]] = {
     # ── 서울 ──────────────────────────────────────────────────
     "종로구":   ["11110"], "중구":    ["11140"], "용산구":   ["11170"],
@@ -49,16 +50,25 @@ DISTRICTS: dict[str, list[str]] = {
     "계양구":   ["28245"], "인천서구": ["28260"],
     "강화군":   ["28710"], "옹진군":   ["28720"],
     # ── 경기 ──────────────────────────────────────────────────
-    "수원시":   ["41111","41113","41115","41117"],
-    "성남시":   ["41131","41133","41135"],
+    "장안구":   ["41111"],
+    "권선구":   ["41113"],
+    "팔달구":   ["41115"],
+    "영통구":   ["41117"],
+    "수정구":   ["41131"],
+    "중원구":   ["41133"],
+    "분당구":   ["41135"],
     "의정부시": ["41150"],
-    "안양시":   ["41171","41173"],
+    "만안구":   ["41171"],
+    "동안구":   ["41173"],
     "부천시":   ["41190"],
     "광명시":   ["41210"],
     "평택시":   ["41220"],
     "동두천시": ["41250"],
-    "안산시":   ["41271","41273"],
-    "고양시":   ["41281","41285","41287"],
+    "상록구":   ["41271"],
+    "단원구":   ["41273"],
+    "덕양구":   ["41281"],
+    "일산동구": ["41285"],
+    "일산서구": ["41287"],
     "과천시":   ["41290"],
     "구리시":   ["41310"],
     "남양주시": ["41360"],
@@ -67,12 +77,17 @@ DISTRICTS: dict[str, list[str]] = {
     "군포시":   ["41410"],
     "의왕시":   ["41430"],
     "하남시":   ["41450"],
-    "용인시":   ["41461","41463","41465"],
+    "처인구":   ["41461"],
+    "기흥구":   ["41463"],
+    "수지구":   ["41465"],
     "파주시":   ["41480"],
     "이천시":   ["41500"],
     "안성시":   ["41550"],
     "김포시":   ["41570"],
-    "화성시":   ["41591","41593","41595","41597"],  # 2024.09 구 신설: 만세구/효행구/병점구/동탄구
+    "만세구":   ["41591"],  # 2024.09 화성시 구 신설
+    "효행구":   ["41593"],
+    "병점구":   ["41595"],
+    "동탄구":   ["41597"],
     "광주시":   ["41610"],
     "양주시":   ["41630"],
     "포천시":   ["41650"],
@@ -86,6 +101,8 @@ DISTRICTS: dict[str, list[str]] = {
 _cache: dict = {"apartments": {}}
 # 추가 기간 원시 데이터 캐시: "district_YYYYMM_YYYYMM" → list[dict]
 _raw_period_cache: dict = {}
+# 단지 상세정보 캐시 (건축물대장)
+_bldg_info_cache: dict = {}
 
 # ─── 좌표 캐시 (파일 영속) ────────────────────────────────────
 GEO_CACHE_FILE = "geo_cache.json"
@@ -311,6 +328,77 @@ async def get_markers(
     }
 
 
+BLDG_API_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService/getBrBasisOulnInfo"
+
+async def fetch_bldg_info(sgg_cd: str, umd_cd: str, jibun: str) -> dict:
+    """건축물대장 표제부 API로 세대수·사용승인일·건폐율·용적률 조회"""
+    if not sgg_cd or not jibun:
+        return {}
+    # 지번 파싱: "663-1" → bun=663, ji=1 / "산100-1" → platGbCd=1, bun=100, ji=1
+    jibun = jibun.strip()
+    if jibun.startswith("산"):
+        plat_gb = "1"
+        jibun = jibun[1:]
+    else:
+        plat_gb = "0"
+    parts = jibun.split("-")
+    bun = parts[0].strip().zfill(4)
+    ji  = parts[1].strip().zfill(4) if len(parts) > 1 else "0000"
+
+    # umdCd가 없으면 빈 문자열로 시도 (일부 API는 생략 허용)
+    params = (
+        f"?serviceKey={TRADE_API_KEY}"
+        f"&sigunguCd={sgg_cd}"
+        f"&bjdongCd={umd_cd}"
+        f"&platGbCd={plat_gb}"
+        f"&bun={bun}&ji={ji}"
+        f"&numOfRows=10&pageNo=1"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(BLDG_API_BASE + params)
+        items = xml_items(r.text) if r.status_code == 200 else []
+        if not items:
+            return {}
+        it = items[0]
+        raw_date = it.get("useAprDay", "")        # YYYYMMDD
+        occ_year  = raw_date[:4] if len(raw_date) >= 4 else ""
+        occ_month = raw_date[4:6] if len(raw_date) >= 6 else ""
+        if occ_year and occ_month:
+            elapsed = datetime.now().year - int(occ_year)
+            occ_display = f"{occ_year}년 {int(occ_month)}월({elapsed}년차)"
+        elif occ_year:
+            elapsed = datetime.now().year - int(occ_year)
+            occ_display = f"{occ_year}년({elapsed}년차)"
+        else:
+            occ_display = ""
+        return {
+            "hhld_cnt":    it.get("hhldCnt", ""),
+            "occ_display": occ_display,
+            "bc_rat":      it.get("bcRat", ""),
+            "vl_rat":      it.get("vlRat", ""),
+        }
+    except Exception as e:
+        logger.warning(f"건축물대장 조회 실패: {e}")
+        return {}
+
+
+@app.get("/api/apt-detail")
+async def get_apt_detail(key: str = Query(...), district: str = Query(...)):
+    """단지 상세정보 (세대수·입주년월·건폐율·용적률)"""
+    if key in _bldg_info_cache:
+        return _bldg_info_cache[key]
+    if district not in _cache["apartments"]:
+        await get_apartments(district=district, dong="", quick=False)
+    apts = _cache["apartments"].get(district, [])
+    apt  = next((a for a in apts if a["key"] == key), None)
+    if not apt:
+        return {}
+    info = await fetch_bldg_info(apt.get("sgg_cd", ""), apt.get("umd_cd", ""), apt.get("jibun", ""))
+    _bldg_info_cache[key] = info
+    return info
+
+
 @app.get("/api/apt-trades")
 async def get_apt_trades(
     key:      str = Query(...),
@@ -398,6 +486,8 @@ async def get_apartments(
                 "name": name, "dong": dong, "key": apt_key,
                 "buildYear": row.get("buildYear", ""),
                 "jibun": row.get("jibun", "").strip(),
+                "sgg_cd": row.get("sggCd", "").strip(),
+                "umd_cd": row.get("umdCd", "").strip(),
                 "areas": {},
             }
         apt_map[apt_key]["areas"].setdefault(area_key, []).append(row)
@@ -520,6 +610,8 @@ async def get_apartments(
             "name": apt["name"],
             "dong": apt["dong"],
             "jibun": apt["jibun"],
+            "sgg_cd": apt.get("sgg_cd", ""),
+            "umd_cd": apt.get("umd_cd", ""),
             "district": district,
             "region": ("경기" if any(c.startswith("41") for c in lawd_codes)
                        else "인천" if any(c.startswith("28") for c in lawd_codes)
@@ -534,26 +626,40 @@ async def get_apartments(
             "is_champion": False,  # 동 내 최고가 여부, 아래서 업데이트
         })
 
-    # 동(洞)별 통계 계산: 평균가
-    from collections import defaultdict
-    dong_prices: dict = defaultdict(list)
+    district_avg = round(sum(apt["price"] for apt in candidates) / len(candidates)) if candidates else 0
+    district_apt_count = len(candidates)
+    district_area_prices: dict[int, list[int]] = {}
     for apt in candidates:
-        dong_prices[apt["dong"]].append(apt["price"])
+        for area_type in apt.get("area_types", []):
+            latest_price = area_type.get("latest_price", 0)
+            area_key = area_type.get("area_key")
+            if area_key and latest_price:
+                district_area_prices.setdefault(area_key, []).append(latest_price)
 
-    dong_avg: dict = {dong: round(sum(prices) / len(prices)) for dong, prices in dong_prices.items()}
+    district_area_avg = {
+        area_key: round(sum(prices) / len(prices))
+        for area_key, prices in district_area_prices.items()
+        if prices
+    }
 
     # 구(區) 전체 최고가 단 1개만 대장
     district_max_price = max((apt["price"] for apt in candidates), default=0)
 
     for apt in candidates:
-        avg = dong_avg[apt["dong"]]
-        diff = apt["price"] - avg
+        diff = apt["price"] - district_avg
         apt["is_champion"] = apt["price"] == district_max_price
-        apt["dong_avg"] = avg
-        apt["dong_avg_display"] = format_price(avg)
-        apt["dong_diff"] = diff
-        apt["dong_diff_display"] = format_price(abs(diff))
-        apt["dong_apt_count"] = len(dong_prices[apt["dong"]])
+        apt["district_avg"] = district_avg
+        apt["district_avg_display"] = format_price(district_avg)
+        apt["district_diff"] = diff
+        apt["district_diff_display"] = format_price(abs(diff))
+        apt["district_apt_count"] = district_apt_count
+        for area_type in apt.get("area_types", []):
+            area_avg = district_area_avg.get(area_type.get("area_key"))
+            if not area_avg:
+                continue
+            area_type["district_avg"] = area_avg
+            area_type["district_avg_display"] = format_price(area_avg)
+            area_type["district_avg_count"] = len(district_area_prices.get(area_type.get("area_key"), []))
 
     # 서버 geo 캐시에서 좌표 주입
     apartments = candidates[:]
@@ -810,10 +916,11 @@ for _region, _data in [
     ("서울", ["종로구","중구","용산구","성동구","광진구","동대문구","중랑구","성북구","강북구",
               "도봉구","노원구","은평구","서대문구","마포구","양천구","강서구","구로구","금천구",
               "영등포구","동작구","관악구","서초구","강남구","송파구","강동구"]),
-    ("경기", ["수원시","성남시","의정부시","안양시","부천시","광명시","평택시","동두천시","안산시",
-              "고양시","과천시","구리시","남양주시","오산시","시흥시","군포시","의왕시","하남시",
-              "용인시","파주시","이천시","안성시","김포시","화성시","광주시","양주시","포천시",
-              "여주시","연천군","가평군","양평군"]),
+    ("경기", ["장안구","권선구","팔달구","영통구","수정구","중원구","분당구","의정부시","만안구",
+              "동안구","부천시","광명시","평택시","동두천시","상록구","단원구","덕양구","일산동구",
+              "일산서구","과천시","구리시","남양주시","오산시","시흥시","군포시","의왕시","하남시",
+              "처인구","기흥구","수지구","파주시","이천시","안성시","김포시","만세구","효행구",
+              "병점구","동탄구","광주시","양주시","포천시","여주시","연천군","가평군","양평군"]),
     ("인천", ["인천중구","인천동구","미추홀구","연수구","남동구","부평구","계양구","인천서구","강화군","옹진군"]),
 ]:
     for _d in _data:
@@ -824,6 +931,7 @@ _school_index_cache: dict | None = None  # (school_type, school_name) -> [school
 _school_meta_cache: dict = {}            # schoolinfo_id -> {title, address}
 _school_detail_cache: dict = {}          # district|type|name|address -> detail
 _school_region_index_cache: dict = {}    # district|type -> {school_name: [schoolinfo_id]}
+_snu_admission_cache: dict[str, dict] | None = None
 
 SCHOOLINFO_INDEX_URL = "https://www.schoolinfo.go.kr/ei/ss/pneiss_a08_s0.do"
 SCHOOLINFO_DETAIL_URL = "https://www.schoolinfo.go.kr/ei/ss/Pneiss_b01_s0.do"
@@ -838,6 +946,16 @@ SCHOOLINFO_SIDO_CODE = {
     "경기": "4100000000",
     "인천": "2800000000",
 }
+SNU_ADMISSION_FILE = r"C:\Users\PC\Downloads\2026_서울대_진학현황1.xlsx"
+SNU_SCHOOL_ALIASES = {
+    "외대부고": ["한국외국어대학교부설고등학교", "한국외국어대학교부속고등학교"],
+    "단대부고": ["단국대학교사범대학부속고등학교", "단국대학교사범대학부설고등학교"],
+    "경기외고": ["경기외국어고등학교"],
+    "대일외고": ["대일외국어고등학교"],
+    "대원외고": ["대원외국어고등학교"],
+    "명덕외고": ["명덕외국어고등학교"],
+    "한영외고": ["한영외국어고등학교"],
+}
 
 
 def _strip_html(text: str) -> str:
@@ -848,6 +966,162 @@ def _strip_html(text: str) -> str:
 
 def _normalize_space(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
+
+
+def _normalize_school_name(text: str) -> str:
+    text = _normalize_space(text)
+    text = re.sub(r"[()\-.,·]", "", text)
+    text = text.replace("고등학교", "고")
+    text = text.replace("부설", "부속")
+    text = text.replace("여자", "여")
+    text = text.replace("대학교", "대")
+    text = text.replace("사범대학", "사대")
+    return text
+
+
+def _snu_match_keys(text: str) -> set[str]:
+    raw = _normalize_space(text)
+    keys = {_normalize_school_name(raw)}
+
+    if raw.endswith("여고"):
+        keys.add(_normalize_school_name(raw[:-2] + "여자고등학교"))
+    if raw.endswith("외고"):
+        keys.add(_normalize_school_name(raw[:-2] + "외국어고등학교"))
+    if raw.endswith("국제고"):
+        keys.add(_normalize_school_name(raw[:-3] + "국제고등학교"))
+    if raw.endswith("과고"):
+        keys.add(_normalize_school_name(raw[:-2] + "과학고등학교"))
+    if raw.endswith("예고"):
+        keys.add(_normalize_school_name(raw[:-2] + "예술고등학교"))
+    if raw.endswith("체고"):
+        keys.add(_normalize_school_name(raw[:-2] + "체육고등학교"))
+    if raw.endswith("고") and not raw.endswith(("여고", "외고", "국제고", "과고", "예고", "체고")):
+        keys.add(_normalize_school_name(raw + "등학교"))
+
+    return {key for key in keys if key}
+
+
+def _iter_xlsx_rows(path: str) -> list[dict[str, str]]:
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+
+    def col_letters(ref: str) -> str:
+        letters = []
+        for ch in ref:
+            if ch.isalpha():
+                letters.append(ch)
+            else:
+                break
+        return "".join(letters)
+
+    with ZipFile(path) as zf:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall("a:si", ns):
+                shared_strings.append("".join(node.text or "" for node in si.iterfind(".//a:t", ns)))
+
+        workbook = ET.fromstring(zf.read("xl/workbook.xml"))
+        rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        rel_map = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+        first_sheet = workbook.find("a:sheets/a:sheet", ns)
+        if first_sheet is None:
+            return []
+
+        rel_id = first_sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id", "")
+        target = "xl/" + rel_map.get(rel_id, "").lstrip("/")
+        if not target or target not in zf.namelist():
+            return []
+
+        sheet = ET.fromstring(zf.read(target))
+        rows: list[dict[str, str]] = []
+        for row in sheet.findall(".//a:sheetData/a:row", ns):
+            values: dict[str, str] = {}
+            for cell in row.findall("a:c", ns):
+                ref = cell.attrib.get("r", "")
+                cell_type = cell.attrib.get("t")
+                value = ""
+                if cell_type == "inlineStr":
+                    value = "".join(node.text or "" for node in cell.iterfind(".//a:t", ns))
+                else:
+                    raw = cell.find("a:v", ns)
+                    if raw is not None:
+                        value = raw.text or ""
+                        if cell_type == "s":
+                            try:
+                                value = shared_strings[int(value)]
+                            except (ValueError, IndexError):
+                                value = ""
+                values[col_letters(ref)] = value.strip()
+            rows.append(values)
+        return rows
+
+
+def _load_snu_admission_cache() -> dict[str, dict]:
+    global _snu_admission_cache
+    if _snu_admission_cache is not None:
+        return _snu_admission_cache
+
+    result: dict[str, dict] = {}
+    if not os.path.exists(SNU_ADMISSION_FILE):
+        _snu_admission_cache = result
+        return result
+
+    try:
+        rows = _iter_xlsx_rows(SNU_ADMISSION_FILE)
+        total_col, early_col, regular_col = "C", "D", "E"
+
+        for row in rows:
+            if (row.get("B") or "").strip() != "고교명":
+                continue
+            if (row.get("D") or "").strip() == "수시" and (row.get("E") or "").strip() == "정시":
+                total_col, early_col, regular_col = "C", "D", "E"
+            elif (row.get("F") or "").strip() == "개" and (row.get("I") or "").strip() == "개":
+                total_col, early_col, regular_col = "C", "F", "I"
+            break
+
+        for row in rows:
+            school_name = (row.get("B") or "").strip()
+            total = _pick_numeric_value(row, total_col)
+            early = _pick_numeric_value(row, early_col, "D", "F")
+            regular = _pick_numeric_value(row, regular_col, "E", "I")
+            if not school_name or not total.isdigit():
+                continue
+            record = {
+                "school_name": school_name,
+                "early": int(early) if early.isdigit() else 0,
+                "regular": int(regular) if regular.isdigit() else 0,
+                "total": int(total),
+            }
+            for key in _snu_match_keys(school_name):
+                result[key] = record
+            for alias in SNU_SCHOOL_ALIASES.get(school_name, []):
+                for key in _snu_match_keys(alias):
+                    result[key] = record
+        logger.info(f"[학교] 서울대 진학현황 로드: {len(result)}개 키")
+    except Exception as e:
+        logger.warning(f"서울대 진학현황 로드 실패: {e}")
+
+    _snu_admission_cache = result
+    return result
+
+
+def _match_snu_admission(name: str) -> dict | None:
+    records = _load_snu_admission_cache()
+    if not records:
+        return None
+
+    for key in _snu_match_keys(name):
+        if key in records:
+            return records[key]
+    return None
+
+
+def _pick_numeric_value(row: dict[str, str], *cols: str) -> str:
+    for col in cols:
+        value = (row.get(col) or "").strip()
+        if value.isdigit():
+            return value
+    return ""
 
 
 def _school_detail_key(district: str, school_type: str, name: str, address: str) -> str:
@@ -1087,13 +1361,21 @@ async def _fetch_school_career_detail(name: str, school_type: str, district: str
             detail["message"] = None
         else:
             university = stats.get("대학", 0)
-            detail["summary_text"] = f"대학 {university} · 취업 {stats.get('취업자', 0)}"
             detail["university_count"] = university
             detail["junior_college_count"] = stats.get("전문대학", 0)
             detail["overseas_count"] = stats.get("국외진학", 0)
             detail["seoul_national_count"] = None
             detail["medical_school_count"] = None
-            detail["message"] = "학교알리미 표준 공시에는 서울대·의대 개별 진학 실적이 직접 제공되지 않습니다."
+            snu = _match_snu_admission(name)
+            if snu:
+                detail["seoul_national_early_count"] = snu["early"]
+                detail["seoul_national_regular_count"] = snu["regular"]
+                detail["seoul_national_count"] = snu["total"]
+                detail["summary_text"] = f"수시 {snu['early']}명 + 정시 {snu['regular']}명: 합계 {snu['total']}명"
+                detail["message"] = None
+            else:
+                detail["summary_text"] = f"대학 {university} · 취업 {stats.get('취업자', 0)}"
+                detail["message"] = "서울대 진학현황 파일과 자동 매칭되지 않아 학교알리미 진로현황으로 표시합니다."
 
         _school_detail_cache[cache_key] = detail
         return detail
