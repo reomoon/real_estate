@@ -366,14 +366,18 @@
       white-space: nowrap;
     }
     #sheet-naver-link {
-      display: inline-block;
-      margin-top: 6px;
-      font-size: 12px;
+      flex-shrink: 0;
+      font-size: 11px;
       color: #03c75a;
       font-weight: 600;
       text-decoration: none;
+      white-space: nowrap;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 12px;
+      padding: 5px 10px;
     }
-    #sheet-naver-link:hover { text-decoration: underline; }
+    #sheet-naver-link:hover { background: #dcfce7; }
     /* 구 평균 비교 바 */
     #sheet-dong-compare {
       display: flex;
@@ -406,7 +410,6 @@
     #sheet-area-list {
       display: flex;
       gap: 8px;
-      margin-bottom: 8px;
       overflow-x: auto;
       scrollbar-width: none;
       -webkit-overflow-scrolling: touch;
@@ -466,6 +469,12 @@
       font-size: 11px;
       color: var(--gray);
     }
+    #sheet-price-right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 5px;
+    }
     #sheet-price-avg {
       font-size: 12px;
       font-weight: 700;
@@ -510,7 +519,7 @@
       margin-bottom: 8px;
       border-bottom: 1px solid var(--border);
     }
-    .period-tab {
+    .period-tab, .chart-tab {
       flex: 1;
       padding: 5px 0;
       border: none;
@@ -523,7 +532,15 @@
       margin-bottom: -1px;
       -webkit-tap-highlight-color: transparent;
     }
-    .period-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .period-tab.active, .chart-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+    #chart-click-price {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--blue);
+      text-align: center;
+      min-height: 18px;
+      margin-bottom: 2px;
+    }
 
     /* 요약 배너 */
     #chart-summary,
@@ -874,9 +891,9 @@
     #btn-volume {
       padding: 4px 10px;
       border-radius: 20px;
-      border: 1.5px solid #3e7556;
+      border: 1.5px solid #7c3aed;
       background: #fff;
-      font-size: 12px; font-weight: 700; color: #13534e;
+      font-size: 12px; font-weight: 700; color: #7c3aed;
       cursor: pointer;
       white-space: nowrap;
       -webkit-tap-highlight-color: transparent;
@@ -1093,9 +1110,9 @@
     </div>
   </div>
 <div id="top-actions">
-    <div id="naver-filter">
+    <!-- <div id="naver-filter">
       <button id="btn-naver" title="네이버 매물 보기">네이버 매물</button>
-    </div>
+    </div> -->
     <div id="volume-filter">
       <button id="btn-volume" title="거래량 보기">거래량</button>
     </div>
@@ -1157,11 +1174,13 @@
   <div id="sheet-header">
     <div id="sheet-name-row">
       <div id="sheet-name"></div>
-      <div id="sheet-meta"></div>
+      <div id="sheet-meta">
+        <span id="sheet-meta-built"></span>
+        <span id="sheet-meta-addr"></span>
+      </div>
     </div>
     <div id="sheet-detail"></div>
     <div id="sheet-dong-compare"></div>
-    <a id="sheet-naver-link" href="#" target="_blank" rel="noopener">네이버 매물 보기 ›</a>
   </div>
   <div id="sheet-price-row">
     <!-- 평형 드롭다운 -->
@@ -1171,12 +1190,21 @@
         <div id="sheet-price"></div>
         <div id="sheet-price-date"></div>
       </div>
-      <div id="sheet-price-avg"></div>
+      <div id="sheet-price-right">
+        <div id="sheet-price-avg"></div>
+        <a id="sheet-naver-link" href="#" target="_blank" rel="noopener">네이버 매물</a>
+      </div>
     </div>
   </div>
   <!-- 가격 추이 차트 -->
   <div id="sheet-chart-wrap">
     <div id="chart-summary"></div>
+    <div id="chart-period-tabs">
+      <button class="chart-tab active" data-months="6">6개월</button>
+      <button class="chart-tab" data-months="12">12개월</button>
+      <button class="chart-tab" data-months="36">전체</button>
+    </div>
+    <div id="chart-click-price"></div>
     <canvas id="sheet-chart" height="90"></canvas>
   </div>
   <div id="sheet-trades"></div>
@@ -2199,11 +2227,13 @@ function closeNaverSheet() {
 }
 
 function naverSearchUrl(apt) {
-  const ms = (apt.lat && apt.lng) ? `&ms=${apt.lat},${apt.lng},17` : '';
-  return `https://new.land.naver.com/search?query=${encodeURIComponent(apt.name)}${ms}`;
+  if (apt.lat && apt.lng) {
+    return `https://new.land.naver.com/search?ms=${apt.lat},${apt.lng},17&a=APT:ABYG:JGC&e=RETAIL`;
+  }
+  return `https://new.land.naver.com/search?query=${encodeURIComponent(apt.name)}`;
 }
 
-const _naverAskingCache = {};  // apt.key → {price_84_display, price_59_display, ...}
+const _naverAskingCache = {};  // apt.key → {price_84_display, price_59_display, complex_no, ...}
 
 async function fetchNaverAsking(apt) {
   if (_naverAskingCache[apt.key]) return _naverAskingCache[apt.key];
@@ -2214,7 +2244,7 @@ async function fetchNaverAsking(apt) {
       _naverAskingCache[apt.key] = d;
       return d;
     }
-  } catch (e) {}
+  } catch (e) { console.warn('Naver asking fetch failed:', e); }
   return null;
 }
 
@@ -2329,11 +2359,20 @@ async function openSheet(apt) {
   document.getElementById('sheet-name').textContent = apt.name;
   const addr = apt.jibun ? `${apt.dong} ${apt.jibun}` : apt.dong;
   const builtTxt = apt.built_year ? `${apt.built_year}년` : '';
-  const metaEl = document.getElementById('sheet-meta');
-  metaEl.innerHTML = `<span>${builtTxt}</span><span>${addr}</span>`;
-
-  // 네이버 링크
-  document.getElementById('sheet-naver-link').href = naverSearchUrl(apt);
+  document.getElementById('sheet-meta-built').textContent = builtTxt;
+  document.getElementById('sheet-meta-addr').textContent = addr;
+  const naverLinkEl = document.getElementById('sheet-naver-link');
+  // 캐시에 complexNo 있으면 즉시 직접 링크
+  const _cached = _naverAskingCache[apt.key];
+  naverLinkEl.href = (_cached?.complex_no)
+    ? `https://new.land.naver.com/complexes/${_cached.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`
+    : naverSearchUrl(apt);
+  // 백그라운드에서 complexNo 받으면 링크 교체
+  fetchNaverAsking(apt).then(asking => {
+    if (asking?.complex_no) {
+      naverLinkEl.href = `https://new.land.naver.com/complexes/${asking.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`;
+    }
+  });
 
   // 상세정보 로딩
   const detailEl = document.getElementById('sheet-detail');
@@ -2735,14 +2774,22 @@ function calc180DayMA(trades) {
   });
 }
 
-function renderChart(allTrades) {
+let _chartMonths = 6;
+
+function renderChart(allTrades, months) {
+  if (months !== undefined) _chartMonths = months;
   const canvas = document.getElementById('sheet-chart');
   const wrap   = document.getElementById('sheet-chart-wrap');
   if (sheetChart) { sheetChart.destroy(); sheetChart = null; }
 
-  // 매매만, 날짜 오름차순, 최근 6개월만
+  // 탭 활성화
+  document.querySelectorAll('.chart-tab').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.months) === _chartMonths);
+  });
+
+  // 매매만, 날짜 오름차순, 기간 필터
   const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - 6);
+  cutoff.setMonth(cutoff.getMonth() - _chartMonths);
   let trades = allTrades
     .filter(t => t.trade_type === '매매' && parseTradeDate(t) >= cutoff)
     .reverse();
@@ -2846,13 +2893,17 @@ function renderChart(allTrades) {
     options: {
       responsive: true,
       layout: { padding: { top: 14 } },
+      onClick(event, elements) {
+        const clickPriceEl = document.getElementById('chart-click-price');
+        if (!elements.length) { clickPriceEl.textContent = ''; return; }
+        const el = elements[0];
+        if (el.datasetIndex !== 0) return;
+        const trade = trades[el.index];
+        clickPriceEl.textContent = `${trade.year_month}.${trade.day}  ${fmtPrice(trade.price)}`;
+      },
       plugins: {
         legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${fmtPrice(ctx.raw)}`
-          }
-        }
+        tooltip: { enabled: false },
       },
       scales: {
         x: { ticks: { font: { size: 10 }, maxTicksLimit: 6 }, grid: { display: false } },
@@ -2969,9 +3020,25 @@ let userSelectedDistrict = false; // 사용자가 직접 구 선택했으면 tru
 document.getElementById('sheet-close').addEventListener('click', closeSheet);
 document.getElementById('volume-sheet-close').addEventListener('click', closeVolumeSheet);
 
+// 차트 기간 탭
+document.getElementById('chart-period-tabs').addEventListener('click', e => {
+  const btn = e.target.closest('.chart-tab');
+  if (!btn) return;
+  const months = parseInt(btn.dataset.months);
+  renderChart(currentChartTrades, months);
+  document.getElementById('chart-click-price').textContent = '';
+});
+
 // 거래 리스트 스크롤 감지 → 더 불러오기
+let _sheetLastScrollTop = 0;
 document.getElementById('sheet-trades').addEventListener('scroll', () => {
   const el = document.getElementById('sheet-trades');
+  // 맨 위에서 위로 당기면 시트 닫기
+  if (el.scrollTop <= 0 && _sheetLastScrollTop <= 0) {
+    closeSheet();
+  }
+  _sheetLastScrollTop = el.scrollTop;
+  // 무한 로드
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
     loadMoreTrades();
   }
