@@ -368,12 +368,12 @@
     #sheet-naver-link {
       flex-shrink: 0;
       font-size: 11px;
-      color: #03c75a;
-      font-weight: 600;
+      color: #000;
+      font-weight: 500;
       text-decoration: none;
       white-space: nowrap;
-      background: #f0fdf4;
-      border: 1px solid #bbf7d0;
+      background: #00de5a;
+      border: 1px solid #00de5a;
       border-radius: 12px;
       padding: 5px 10px;
     }
@@ -487,6 +487,7 @@
       padding: 8px 16px 6px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
+      position: relative;
     }
     #sheet-chart-wrap canvas { width: 100% !important; }
     #sheet-tabs {
@@ -534,12 +535,27 @@
     }
     .period-tab.active, .chart-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
     #chart-click-price {
-      font-size: 13px;
+      display: none;
+      position: absolute;
+      background: #1e293b;
+      color: #fff;
+      font-size: 12px;
       font-weight: 700;
-      color: var(--blue);
-      text-align: center;
-      min-height: 18px;
-      margin-bottom: 2px;
+      padding: 4px 9px;
+      border-radius: 8px;
+      pointer-events: none;
+      transform: translate(-50%, -110%);
+      white-space: nowrap;
+      z-index: 10;
+    }
+    #chart-click-price::after {
+      content: '';
+      position: absolute;
+      bottom: -5px; left: 50%;
+      transform: translateX(-50%);
+      border: 5px solid transparent;
+      border-bottom: none;
+      border-top-color: #1e293b;
     }
 
     /* 요약 배너 */
@@ -1201,9 +1217,9 @@
   <div id="sheet-chart-wrap">
     <div id="chart-summary"></div>
     <div id="chart-period-tabs">
-      <button class="chart-tab active" data-months="6">6개월</button>
-      <button class="chart-tab" data-months="12">12개월</button>
-      <button class="chart-tab" data-months="36">전체</button>
+      <button class="chart-tab" data-months="6">6개월</button>
+      <button class="chart-tab active" data-months="12">12개월</button>
+      <button class="chart-tab" data-months="24">24개월</button>
     </div>
     <div id="chart-click-price"></div>
     <canvas id="sheet-chart" height="90"></canvas>
@@ -2441,7 +2457,7 @@ function renderSheetDetails(apt) {
     btn.innerHTML = `
       <div class="sheet-area-main">${at.label} · 최근 ${at.latest_price_display}</div>
       <div class="sheet-area-sub">${at.latest_date}</div>
-      ${at.district_avg_display ? `<div class="sheet-area-avg">구 평균 ${at.district_avg_display}</div>` : ''}
+      ${at.district_avg_display ? `<div class="sheet-area-avg">${apt.district} 평균 ${at.district_avg_display}</div>` : ''}
     `;
     btn.addEventListener('click', () => renderSheetArea(apt, i));
     list.appendChild(btn);
@@ -2489,7 +2505,7 @@ function renderSheetArea(apt, idx) {
   }
 
   currentChartTrades = at.trades;
-  renderChart(at.trades);
+  renderChart(at.trades, 12);
 
   const tradesEl = document.getElementById('sheet-trades');
   tradesState = {
@@ -2775,7 +2791,7 @@ function calc180DayMA(trades) {
   });
 }
 
-let _chartMonths = 6;
+let _chartMonths = 12;
 
 function renderChart(allTrades, months) {
   if (months !== undefined) _chartMonths = months;
@@ -2896,11 +2912,20 @@ function renderChart(allTrades, months) {
       layout: { padding: { top: 14 } },
       onClick(event, elements) {
         const clickPriceEl = document.getElementById('chart-click-price');
-        if (!elements.length) { clickPriceEl.textContent = ''; return; }
+        if (!elements.length) { clickPriceEl.style.display = 'none'; return; }
         const el = elements[0];
         if (el.datasetIndex !== 0) return;
         const trade = trades[el.index];
+        const pt = sheetChart.getDatasetMeta(0).data[el.index];
+        const wrap = document.getElementById('sheet-chart-wrap');
+        const wrapRect = wrap.getBoundingClientRect();
+        const canvasRect = canvas.getBoundingClientRect();
+        const x = canvasRect.left - wrapRect.left + pt.x;
+        const y = canvasRect.top  - wrapRect.top  + pt.y;
         clickPriceEl.textContent = `${trade.year_month}.${trade.day}  ${fmtPrice(trade.price)}`;
+        clickPriceEl.style.display = 'block';
+        clickPriceEl.style.left = `${x}px`;
+        clickPriceEl.style.top  = `${y}px`;
       },
       plugins: {
         legend: { display: false },
@@ -2951,33 +2976,27 @@ function refreshData() {
     .then(() => loadVisibleDistricts());
 }
 
-// ── 바텀시트 스와이프 닫기 (핸들 + 헤더 영역) ──────────────
+// ── 바텀시트 스와이프 닫기 ──────────────────────────────────
+// 시트 어디서나 아래로 50px 이상 드래그하면 닫힘
+// 단, 거래 리스트가 스크롤된 상태(scrollTop > 0)에서는 닫히지 않음
 (function initSwipe() {
-  const sheet  = document.getElementById('sheet');
-  const handle = document.getElementById('sheet-handle');
-  const header = document.getElementById('sheet-header');
-  let startY = 0, startScrollTop = 0;
+  const sheet      = document.getElementById('sheet');
+  const tradesEl   = document.getElementById('sheet-trades');
+  let startY = 0, startTradesScrollTop = 0;
   let dragging = false;
 
-  function onTouchStart(e) {
+  sheet.addEventListener('touchstart', e => {
     startY = e.touches[0].clientY;
-    startScrollTop = sheet.scrollTop || 0;
+    startTradesScrollTop = tradesEl ? tradesEl.scrollTop : 0;
     dragging = true;
-  }
-
-  handle.addEventListener('touchstart', onTouchStart, { passive: true });
-  header.addEventListener('touchstart', onTouchStart, { passive: true });
-
-  document.addEventListener('touchmove', e => {
-    if (!dragging) return;
-    // 시트가 맨 위에 있을 때만 드래그 피드백 (선택사항)
   }, { passive: true });
 
-  document.addEventListener('touchend', e => {
+  sheet.addEventListener('touchend', e => {
     if (!dragging) return;
     dragging = false;
     const dy = e.changedTouches[0].clientY - startY;
-    if (dy > 50) closeSheet();
+    // 아래로 50px 이상 & 거래 리스트가 최상단일 때만 닫기
+    if (dy > 50 && startTradesScrollTop <= 0) closeSheet();
   }, { passive: true });
 })();
 
@@ -3022,24 +3041,41 @@ document.getElementById('sheet-close').addEventListener('click', closeSheet);
 document.getElementById('volume-sheet-close').addEventListener('click', closeVolumeSheet);
 
 // 차트 기간 탭
-document.getElementById('chart-period-tabs')?.addEventListener('click', e => {
+document.getElementById('chart-period-tabs')?.addEventListener('click', async e => {
   const btn = e.target.closest('.chart-tab');
   if (!btn) return;
   const months = parseInt(btn.dataset.months);
-  renderChart(currentChartTrades, months);
-  document.getElementById('chart-click-price').textContent = '';
+  document.getElementById('chart-click-price').style.display = 'none';
+
+  // 24개월 탭: 캐시 없으면 서버에서 추가 데이터 요청
+  if (months === 24 && currentApt) {
+    const areaIdx = tradesState?.areaIdx ?? 0;
+    const at24 = currentApt._area_types_24?.[areaIdx];
+    if (at24) {
+      renderChart(at24.trades, 24);
+    } else {
+      btn.textContent = '로딩...';
+      btn.disabled = true;
+      try {
+        const params = new URLSearchParams({ key: currentApt.key, district: currentApt.district, months: 24 });
+        const res  = await fetch(`/api/apt-trades?${params}`);
+        const data = await res.json();
+        currentApt._area_types_24 = data.area_types || [];
+        const at = currentApt._area_types_24[areaIdx];
+        if (at) renderChart(at.trades, 24);
+      } finally {
+        btn.textContent = '24개월';
+        btn.disabled = false;
+      }
+    }
+  } else {
+    renderChart(currentChartTrades, months);
+  }
 });
 
-// 거래 리스트 스크롤 감지 → 더 불러오기
-let _sheetLastScrollTop = 0;
+// 거래 리스트 스크롤 감지 → 무한 로드
 document.getElementById('sheet-trades').addEventListener('scroll', () => {
   const el = document.getElementById('sheet-trades');
-  // 맨 위에서 위로 당기면 시트 닫기
-  if (el.scrollTop <= 0 && _sheetLastScrollTop <= 0) {
-    closeSheet();
-  }
-  _sheetLastScrollTop = el.scrollTop;
-  // 무한 로드
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
     loadMoreTrades();
   }

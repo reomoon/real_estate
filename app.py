@@ -416,11 +416,103 @@ async def get_apt_detail(key: str = Query(...), district: str = Query(...)):
 async def get_apt_trades(
     key:      str = Query(...),
     district: str = Query(...),
+    months:   int = Query(default=12),
 ):
-    """단지 클릭 시 거래이력 조회 — 서버 캐시 없으면 12개월 fetch 후 반환"""
+    """단지 클릭 시 거래이력 조회 — months 파라미터로 기간 지정 (기본 12개월)"""
     if district not in DISTRICTS:
         return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
-    # 12개월 캐시 없으면 fetch
+
+    # 12개월 초과 — 캐시 12개월 데이터 + 추가 기간만 조회 후 병합
+    if months > 12:
+        import asyncio
+        # 먼저 캐시된 12개월 데이터 확보
+        if district not in _cache["apartments"]:
+            await get_apartments(district=district, dong="", quick=False)
+        apts = _cache["apartments"].get(district, [])
+        apt_cached = next((a for a in apts if a["key"] == key), None)
+
+        cached_area_types = apt_cached.get("area_types", []) if apt_cached else []
+
+        # 캐시에 없는 기간(13~months개월)만 추가 조회
+        all_yms    = get_recent_deal_yms(months)
+        cached_yms = set(get_recent_deal_yms(12))
+        extra_yms  = [ym for ym in all_yms if ym not in cached_yms]
+
+        extra_by_area: dict = {}
+        if extra_yms:
+            lawd_codes = DISTRICTS[district]
+            tasks = []
+            for code in lawd_codes:
+                for ym in extra_yms:
+                    tasks.append(fetch_transactions(code, ym))
+                    tasks.append(fetch_rents(code, ym))
+            results = await asyncio.gather(*tasks)
+            extra_raw = [row for batch in results for row in batch]
+
+            for row in extra_raw:
+                if f"{row.get('name','')}_{row.get('dong','')}" != key:
+                    continue
+                ak = round(float(row.get("area", 0)))
+                extra_by_area.setdefault(ak, []).append(row)
+
+        # 캐시된 area_types에 추가 trades 병합 (enriched 필드 유지)
+        area_types = []
+        for at in cached_area_types:
+            ak = at["area_key"]
+            extra_rows = extra_by_area.pop(ak, [])
+            extra_trades = []
+            for r in extra_rows:
+                p = r.get("price", 0)
+                ttype = r.get("trade_type", "매매")
+                deposit = r.get("deposit", 0)
+                monthly = r.get("monthly_rent", 0)
+                if ttype == "매매":
+                    price_str = format_price(p)
+                elif monthly > 0:
+                    price_str = f"{format_price(deposit)}/{monthly:,}"
+                else:
+                    price_str = format_price(deposit)
+                extra_trades.append({
+                    "year_month": f"{r.get('year','')}.{r.get('month','').zfill(2)}",
+                    "day": r.get("day", ""),
+                    "floor": r.get("floor", ""),
+                    "building": r.get("building", ""),
+                    "price": p if ttype == "매매" else deposit,
+                    "price_display": price_str,
+                    "trade_type": ttype,
+                    "area": r.get("area", ""),
+                })
+            merged_at = dict(at)
+            merged_at["trades"] = sorted(
+                list(at.get("trades", [])) + extra_trades,
+                key=lambda r: (r.get("year_month", ""), r.get("day", "")),
+                reverse=True,
+            )
+            area_types.append(merged_at)
+
+        # 캐시에 없던 면적(신규)도 추가
+        for ak, rows in extra_by_area.items():
+            trade_history = []
+            for r in rows:
+                p = r.get("price", 0)
+                ttype = r.get("trade_type", "매매")
+                deposit = r.get("deposit", 0)
+                monthly = r.get("monthly_rent", 0)
+                price_str = format_price(p) if ttype == "매매" else (
+                    f"{format_price(deposit)}/{monthly:,}" if monthly > 0 else format_price(deposit))
+                trade_history.append({
+                    "year_month": f"{r.get('year','')}.{r.get('month','').zfill(2)}",
+                    "day": r.get("day",""), "floor": r.get("floor",""),
+                    "building": r.get("building",""),
+                    "price": p if ttype == "매매" else deposit,
+                    "price_display": price_str, "trade_type": ttype, "area": r.get("area",""),
+                })
+            trade_history.sort(key=lambda r: (r.get("year_month",""), r.get("day","")), reverse=True)
+            area_types.append({"area_key": ak, "label": f"{ak}㎡", "trades": trade_history})
+
+        return {"area_types": area_types}
+
+    # 12개월 이하 — 캐시 사용
     if district not in _cache["apartments"]:
         await get_apartments(district=district, dong="", quick=False)
     apts = _cache["apartments"].get(district, [])
@@ -914,7 +1006,8 @@ async def get_more_trades(
         })
 
     next_offset = offset + count
-    has_more = next_offset < 36  # 최대 3년치
+    # 데이터가 있고 최대 60개월(5년)까지 허용, 빈 결과면 종료
+    has_more = bool(trade_history) and next_offset < 60
     return {"trades": trade_history, "has_more": has_more, "next_offset": next_offset}
 
 
