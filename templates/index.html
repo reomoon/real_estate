@@ -365,6 +365,15 @@
       flex-shrink: 0;
       white-space: nowrap;
     }
+    #sheet-naver-link {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 12px;
+      color: #03c75a;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    #sheet-naver-link:hover { text-decoration: underline; }
     /* 구 평균 비교 바 */
     #sheet-dong-compare {
       display: flex;
@@ -877,6 +886,7 @@
     .price-tag.naver-mode { background: #379360;}
     .price-tag.naver-mode::after { border-top-color: #379360;}
     .price-tag .naver-cmp { font-size: 9px; font-weight: 500; opacity: .9; }
+    .price-tag .naver-avg { font-size: 9px; font-weight: 400; opacity: .75; margin-left: 3px; }
     /* 네이버 매물 시트 */
     #naver-sheet {
       position: fixed; bottom: 0; left: 0; right: 0;
@@ -911,8 +921,12 @@
       color: inherit;
       gap: 10px;
     }
+    .naver-article.apt-link { background: #f0fdf4; }
+    .naver-article.dong-link { background: #eff6ff; }
     .naver-article:active { background: #f8fafc; }
     .naver-article-price { font-size: 15px; font-weight: 700; flex: 1; }
+    .naver-article.apt-link .naver-article-price { color: #16a34a; }
+    .naver-article.dong-link .naver-article-price { color: #2563eb; }
     .naver-article-info { font-size: 12px; color: var(--gray); }
     .naver-article-desc { font-size: 11px; color: #94a3b8; margin-top: 2px; }
     .naver-article-arrow { color: #cbd5e1; font-size: 14px; }
@@ -1147,6 +1161,7 @@
     </div>
     <div id="sheet-detail"></div>
     <div id="sheet-dong-compare"></div>
+    <a id="sheet-naver-link" href="#" target="_blank" rel="noopener">네이버 매물 보기 ›</a>
   </div>
   <div id="sheet-price-row">
     <!-- 평형 드롭다운 -->
@@ -2119,12 +2134,25 @@ function showDistrictMarkers() {
 }
 
 // ── 마커 생성 (풀용) ──────────────────────────────────────
+function aptMarkerHTML(apt, naver) {
+  const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
+  if (naver) {
+    // 호가(네이버) → 실거래 84/59 → 전체 실거래 순으로 표시
+    const price = apt.naver_asking_display || apt.naver_price_display || apt.price_display;
+    const avgLabel = apt.naver_asking_display ? '실거래' : '평균';
+    const avgVal   = apt.naver_asking_display ? (apt.naver_price_display || apt.naver_avg_display) : apt.naver_avg_display;
+    const avg = avgVal ? `<span class="naver-avg">${avgLabel} ${avgVal}</span>` : '';
+    return `<div class="apt-name">${crown}${apt.name}</div>${price}${avg}`;
+  }
+  const built = apt.built_year ? `<span class="built">${apt.built_year}년 입주</span>` : '';
+  return `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub">${apt.main_area_label}</span>${built}`;
+}
+
 function createAptMarker(apt, pos) {
   const el = document.createElement('div');
-  el.className = 'price-tag' + (apt.is_champion ? ' champion' : '');
-  const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
-  const built = apt.built_year ? `<span class="built">${apt.built_year}년 입주</span>` : '';
-  el.innerHTML = `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub">${apt.main_area_label}</span>${built}`;
+  el.className = 'price-tag' + (apt.is_champion ? ' champion' : '') + (naverMode ? ' naver-mode' : '');
+  el.innerHTML = aptMarkerHTML(apt, naverMode);
+  if (naverMode) fetchNaverAsking(apt).then(asking => applyNaverAskingToMarker(el, apt, asking));
 
   const marker = new naver.maps.Marker({
     position: pos,
@@ -2171,54 +2199,105 @@ function closeNaverSheet() {
 }
 
 function naverSearchUrl(apt) {
-  return `https://new.land.naver.com/search?keyword=${encodeURIComponent(apt.name)}`;
+  const ms = (apt.lat && apt.lng) ? `&ms=${apt.lat},${apt.lng},17` : '';
+  return `https://new.land.naver.com/search?query=${encodeURIComponent(apt.name)}${ms}`;
+}
+
+const _naverAskingCache = {};  // apt.key → {price_84_display, price_59_display, ...}
+
+async function fetchNaverAsking(apt) {
+  if (_naverAskingCache[apt.key]) return _naverAskingCache[apt.key];
+  try {
+    const r = await fetch(`/api/naver-asking?key=${encodeURIComponent(apt.key)}&name=${encodeURIComponent(apt.name)}`);
+    const d = await r.json();
+    if (!d.error) {
+      _naverAskingCache[apt.key] = d;
+      return d;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function applyNaverAskingToMarker(el, apt, asking) {
+  if (!asking) return;
+  const price = asking.price_84_display || asking.price_59_display;
+  if (!price) return;
+  apt.naver_asking_display = price;
+  el.innerHTML = aptMarkerHTML(apt, true);
 }
 
 function applyNaverMode() {
   _aptPool.forEach(({ el, apt }) => {
     if (!apt) return;
-    const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
     el.className = 'price-tag naver-mode' + (apt.is_champion ? ' champion' : '');
-    el.innerHTML = `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub naver-cmp">N 매물보기</span>`;
+    el.innerHTML = aptMarkerHTML(apt, true);
+    // 호가 비동기 로드
+    fetchNaverAsking(apt).then(asking => applyNaverAskingToMarker(el, apt, asking));
   });
 }
 
 function revertNaverMode() {
   _aptPool.forEach(({ el, apt }) => {
     if (!apt) return;
-    const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
-    const built = apt.built_year ? `<span class="built">${apt.built_year}년 입주</span>` : '';
     el.className = 'price-tag' + (apt.is_champion ? ' champion' : '');
-    el.innerHTML = `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub">${apt.main_area_label}</span>${built}`;
+    el.innerHTML = aptMarkerHTML(apt, false);
   });
 }
 
 function openNaverSheet(apt) {
-  const areaKey = parseInt(apt.main_area_label) || 84;
   const pref = REGION_PREFIX[apt.region || currentRegion] || '서울특별시';
   const dist = DISTRICT_GEO_NAME[apt.district] || apt.district;
   const searchUrl = naverSearchUrl(apt);
-  const dongSearchUrl = `https://new.land.naver.com/search?keyword=${encodeURIComponent(pref + ' ' + dist + ' ' + apt.dong)}`;
+  const ms = (apt.lat && apt.lng) ? `&ms=${apt.lat},${apt.lng},16` : '';
+  const dongSearchUrl = `https://new.land.naver.com/search?query=${encodeURIComponent(pref + ' ' + dist + ' ' + apt.dong)}${ms}`;
 
   document.getElementById('naver-sheet-title').textContent = apt.name;
-  document.getElementById('naver-sheet-sub').textContent = `실거래 ${apt.price_display} · ${apt.main_area_label}`;
-  document.getElementById('naver-sheet-list').innerHTML = `
-    <a class="naver-article" href="${searchUrl}" target="_blank" rel="noopener">
-      <div style="flex:1">
-        <div class="naver-article-price">네이버 부동산에서 "${apt.name}" 매물 보기</div>
-        <div class="naver-article-info">${apt.main_area_label} 전체 매물 검색</div>
-      </div>
-      <span class="naver-article-arrow">›</span>
-    </a>
-    <a class="naver-article" href="${dongSearchUrl}" target="_blank" rel="noopener">
-      <div style="flex:1">
-        <div class="naver-article-price">${dist} ${apt.dong} 전체 매물 보기</div>
-        <div class="naver-article-info">동 단위 매물 검색</div>
-      </div>
-      <span class="naver-article-arrow">›</span>
-    </a>
-  `;
+  const subEl = document.getElementById('naver-sheet-sub');
+  subEl.textContent = `실거래 ${apt.naver_price_display || apt.price_display} · ${apt.naver_area_label || apt.main_area_label}`;
+
+  const listEl = document.getElementById('naver-sheet-list');
+
+  function renderNaverList(complexUrl) {
+    const aptUrl  = complexUrl || searchUrl;
+    const aptInfo = complexUrl ? '매물 리스트 직접 열기' : '단지 검색 (complexNo 로딩 중...)';
+    listEl.innerHTML = `
+      <a class="naver-article apt-link" id="naver-apt-link" href="${aptUrl}" target="_blank" rel="noopener">
+        <div style="flex:1">
+          <div class="naver-article-price">"${apt.name}" 매물 보기</div>
+          <div class="naver-article-info">${aptInfo}</div>
+        </div>
+        <span class="naver-article-arrow">›</span>
+      </a>
+      <a class="naver-article dong-link" href="${dongSearchUrl}" target="_blank" rel="noopener">
+        <div style="flex:1">
+          <div class="naver-article-price">${dist} ${apt.dong} 전체 매물</div>
+          <div class="naver-article-info">동 단위 지도에서 보기</div>
+        </div>
+        <span class="naver-article-arrow">›</span>
+      </a>
+    `;
+  }
+
+  // 캐시에 complexNo 있으면 즉시 직접 링크, 없으면 search 링크로 먼저 렌더
+  const cached = _naverAskingCache[apt.key];
+  const cachedComplexUrl = cached?.complex_no
+    ? `https://new.land.naver.com/complexes/${cached.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`
+    : null;
+  renderNaverList(cachedComplexUrl);
+
   document.getElementById('naver-sheet').classList.add('open');
+
+  // 호가 + complexNo 비동기 로드
+  fetchNaverAsking(apt).then(asking => {
+    if (!asking) return;
+    const hp = asking.price_84_display || asking.price_59_display;
+    if (hp) subEl.textContent = `호가 ${hp} · 실거래 ${apt.naver_price_display || apt.price_display}`;
+    // complexNo 받으면 단지 직접 링크로 교체
+    if (asking.complex_no) {
+      const directUrl = `https://new.land.naver.com/complexes/${asking.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`;
+      renderNaverList(directUrl);
+    }
+  });
 }
 
 document.getElementById('naver-sheet-close').addEventListener('click', closeNaverSheet);
@@ -2252,6 +2331,9 @@ async function openSheet(apt) {
   const builtTxt = apt.built_year ? `${apt.built_year}년` : '';
   const metaEl = document.getElementById('sheet-meta');
   metaEl.innerHTML = `<span>${builtTxt}</span><span>${addr}</span>`;
+
+  // 네이버 링크
+  document.getElementById('sheet-naver-link').href = naverSearchUrl(apt);
 
   // 상세정보 로딩
   const detailEl = document.getElementById('sheet-detail');

@@ -14,6 +14,7 @@ import re
 import html as html_lib
 from zipfile import ZipFile
 from dotenv import load_dotenv
+import time
 
 # .env 파일에서 환경변수 로드
 load_dotenv()
@@ -315,11 +316,23 @@ async def get_markers(
     result = await get_apartments(district=district, dong="", quick=quick)
     if hasattr(result, "body"):
         return result
-    # 얕은 복사로 캐시 원본 보호
-    markers = [
-        {k: v for k, v in apt.items() if k != "area_types"}
-        for apt in result.get("apartments", [])
-    ]
+    # 얕은 복사로 캐시 원본 보호 + 84㎡/59㎡ 호가 필드 계산
+    markers = []
+    for apt in result.get("apartments", []):
+        m = {k: v for k, v in apt.items() if k != "area_types"}
+        area_types = apt.get("area_types", [])
+        naver_at = next((a for a in area_types if a.get("area_key") == 84), None)
+        if not naver_at:
+            naver_at = next((a for a in area_types if a.get("area_key") == 59), None)
+        if naver_at:
+            m["naver_price_display"] = naver_at.get("latest_price_display") or apt.get("price_display", "")
+            m["naver_avg_display"]   = naver_at.get("district_avg_display") or apt.get("district_avg_display", "")
+            m["naver_area_label"]    = naver_at.get("label") or apt.get("main_area_label", "")
+        else:
+            m["naver_price_display"] = apt.get("price_display", "")
+            m["naver_avg_display"]   = apt.get("district_avg_display", "")
+            m["naver_area_label"]    = apt.get("main_area_label", "")
+        markers.append(m)
     return {
         "apartments": markers,
         "cached": result.get("cached"),
@@ -1114,6 +1127,127 @@ def _match_snu_admission(name: str) -> dict | None:
         if key in records:
             return records[key]
     return None
+
+
+# ── 네이버 부동산 호가 ────────────────────────────────────────
+NAVER_ASKING_TTL = 3600 * 4  # 4시간 캐시
+_naver_complex_cache: dict = {}   # apt_key -> complex_no
+_naver_asking_cache: dict  = {}   # apt_key -> {price_84, price_59, complex_no, ts, ...}
+
+def _naver_headers() -> dict:
+    """쿠키 포함 Naver 요청 헤더 (환경변수 NAVER_COOKIE 설정 시 적용)"""
+    h = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Referer":         "https://new.land.naver.com/",
+        "Accept":          "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    cookie = os.getenv("NAVER_COOKIE", "").strip()
+    if cookie:
+        h["Cookie"] = cookie
+    return h
+
+
+async def _naver_get(url: str, params: dict) -> dict | None:
+    """Naver API GET — 429 시 1회 재시도(3초 후)"""
+    import asyncio
+    headers = _naver_headers()
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(headers=headers, timeout=7.0) as c:
+                r = await c.get(url, params=params)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 429 and attempt == 0:
+                logger.warning(f"Naver 429 — 3초 후 재시도: {url}")
+                await asyncio.sleep(3)
+                continue
+            logger.warning(f"Naver HTTP {r.status_code}: {url}")
+            return None
+        except Exception as e:
+            logger.warning(f"Naver 요청 실패: {e}")
+            return None
+    return None
+
+
+async def _search_naver_complex_no(name: str) -> str | None:
+    """단지명으로 네이버 complexNo 검색"""
+    data = await _naver_get(
+        "https://new.land.naver.com/api/search",
+        {"query": name, "type": "COMPLEX", "page": "1", "pageSize": "5"},
+    )
+    if not data:
+        return None
+    complexes = (
+        (data.get("result") or {}).get("complexList")
+        or data.get("complexList")
+        or []
+    )
+    if not complexes:
+        return None
+    first = complexes[0]
+    no = first.get("complexNo") or first.get("hscpNo") or first.get("no")
+    return str(no) if no else None
+
+
+async def _fetch_naver_asking(complex_no: str) -> dict:
+    """complexNo → 84㎡/59㎡ 매매 호가 최저가 (만원 단위)"""
+    data = await _naver_get(
+        f"https://new.land.naver.com/api/articles/complex/{complex_no}",
+        {"realEstateType": "APT", "tradeType": "A1", "page": "1", "pageSize": "50"},
+    )
+    if not data:
+        return {}
+    articles = data.get("articleList") or data.get("articles") or []
+
+    prices: dict[int, list[int]] = {}
+    for art in articles:
+        area_str  = art.get("area2") or art.get("exclusiveArea") or art.get("representativeArea") or ""
+        price_str = art.get("dealOrWarrantPrc") or art.get("price") or ""
+        try:
+            area  = int(float(str(area_str).replace(",", "")))
+            price = int(str(price_str).replace(",", "").replace(" ", ""))  # 만원
+            if area > 0 and price > 0:
+                prices.setdefault(area, []).append(price)
+        except (ValueError, TypeError):
+            continue
+
+    result: dict = {}
+    for area_key in [84, 59]:
+        matches = [p for a, lst in prices.items() for p in lst if abs(a - area_key) <= 3]
+        if matches:
+            mn = min(matches)
+            result[f"price_{area_key}"]         = mn
+            result[f"price_{area_key}_display"] = format_price(mn)
+    logger.info(f"[네이버 호가] complex {complex_no}: {result}")
+    return result
+
+
+@app.get("/api/naver-asking")
+async def get_naver_asking(key: str = Query(...), name: str = Query(...)):
+    """단지 네이버 호가 + complexNo 반환 (캐시 4시간)"""
+    now = time.time()
+    cached = _naver_asking_cache.get(key)
+    if cached and now - cached.get("ts", 0) < NAVER_ASKING_TTL:
+        return cached
+
+    complex_no = _naver_complex_cache.get(key)
+    if not complex_no:
+        complex_no = await _search_naver_complex_no(name)
+        if complex_no:
+            _naver_complex_cache[key] = complex_no
+
+    if not complex_no:
+        return {"error": "not_found"}
+
+    prices = await _fetch_naver_asking(complex_no)
+    result = {"complex_no": complex_no, "ts": now, **prices}
+    _naver_asking_cache[key] = result
+    return result
 
 
 def _pick_numeric_value(row: dict[str, str], *cols: str) -> str:
