@@ -1110,9 +1110,10 @@
     </div>
   </div>
 <div id="top-actions">
-    <!-- <div id="naver-filter">
+    <!-- 네이버 매물 버튼 (id="naver-filter") hidden 숨김 -->
+    <div id="naver-filter" hidden>
       <button id="btn-naver" title="네이버 매물 보기">네이버 매물</button>
-    </div> -->
+    </div>
     <div id="volume-filter">
       <button id="btn-volume" title="거래량 보기">거래량</button>
     </div>
@@ -3021,7 +3022,7 @@ document.getElementById('sheet-close').addEventListener('click', closeSheet);
 document.getElementById('volume-sheet-close').addEventListener('click', closeVolumeSheet);
 
 // 차트 기간 탭
-document.getElementById('chart-period-tabs').addEventListener('click', e => {
+document.getElementById('chart-period-tabs')?.addEventListener('click', e => {
   const btn = e.target.closest('.chart-tab');
   if (!btn) return;
   const months = parseInt(btn.dataset.months);
