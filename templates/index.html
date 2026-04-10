@@ -325,16 +325,18 @@
     }
     #sheet-name-row {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       gap: 8px;
       margin-bottom: 3px;
-      flex-wrap: wrap;
     }
     #sheet-name {
       font-size: 17px;
       font-weight: 700;
       color: var(--dark);
-      flex-shrink: 0;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     #sheet-detail {
       display: flex;
@@ -357,7 +359,11 @@
     #sheet-meta {
       font-size: 12px;
       color: var(--gray);
-      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      white-space: nowrap;
     }
     /* 구 평균 비교 바 */
     #sheet-dong-compare {
@@ -541,8 +547,8 @@
     #chart-summary .sum-meta .meta-item { white-space: nowrap; }
     #chart-summary .sum-change,
     #volume-summary .sum-change { margin-left: auto; font-weight: 700; font-size: 12px; }
-    .sum-up   { color: #4f3232; }
-    .sum-down { color: #34d399; }
+    .sum-up   { color: #dc2626; }
+    .sum-down { color: #0054f3; }
     .sum-flat { color: #9ca3af; }
 
     /* 차트 하단 통계 */
@@ -1137,9 +1143,9 @@
   <div id="sheet-header">
     <div id="sheet-name-row">
       <div id="sheet-name"></div>
-      <div id="sheet-detail"></div>
+      <div id="sheet-meta"></div>
     </div>
-    <div id="sheet-meta"></div>
+    <div id="sheet-detail"></div>
     <div id="sheet-dong-compare"></div>
   </div>
   <div id="sheet-price-row">
@@ -2242,13 +2248,14 @@ let districtVolumeChart = null;
 async function openSheet(apt) {
   currentApt = apt;
   document.getElementById('sheet-name').textContent = apt.name;
-  const built = apt.built_year ? `${apt.built_year}년 · ` : '';
-  document.getElementById('sheet-meta').textContent = `${built}${apt.dong}`;
-
-  // 주소 구성 및 상세정보 로딩
-  const detailEl = document.getElementById('sheet-detail');
   const addr = apt.jibun ? `${apt.dong} ${apt.jibun}` : apt.dong;
-  detailEl.innerHTML = `<span class="sheet-detail-addr">${addr}</span>`;
+  const builtTxt = apt.built_year ? `${apt.built_year}년` : '';
+  const metaEl = document.getElementById('sheet-meta');
+  metaEl.innerHTML = `<span>${builtTxt}</span><span>${addr}</span>`;
+
+  // 상세정보 로딩
+  const detailEl = document.getElementById('sheet-detail');
+  detailEl.innerHTML = '';
   fetch(`/api/apt-detail?key=${encodeURIComponent(apt.key)}&district=${encodeURIComponent(apt.district)}`)
     .then(r => r.json())
     .then(d => {
@@ -2340,7 +2347,7 @@ function renderSheetArea(apt, idx) {
     const diffTxt = diff === 0 ? '평균과 동일' : `평균보다 ${fmtPrice(Math.abs(diff))} ${diff > 0 ? '높음' : '낮음'}`;
     cmp.style.display = 'flex';
     cmp.innerHTML = `
-      <span class="avg-label">${apt.district} ${at.label} 평균 (${at.district_avg_count}개 단지)</span>
+      <span class="avg-label">${apt.district} ${at.label} (${at.district_avg_count}개 단지)</span>
       <span class="avg-price">${at.district_avg_display}</span>
       <span class="diff-badge ${cls}">${sign} ${diffTxt}</span>
     `;
@@ -2351,7 +2358,7 @@ function renderSheetArea(apt, idx) {
     const diffTxt = diff === 0 ? '평균과 동일' : `평균보다 ${apt.district_diff_display} ${diff > 0 ? '높음' : '낮음'}`;
     cmp.style.display = 'flex';
     cmp.innerHTML = `
-      <span class="avg-label">${apt.district} 평균 (${apt.district_apt_count}개 단지)</span>
+      <span class="avg-label">${apt.district} (${apt.district_apt_count}개 단지)</span>
       <span class="avg-price">${apt.district_avg_display}</span>
       <span class="diff-badge ${cls}">${sign} ${diffTxt}</span>
     `;
@@ -2687,8 +2694,7 @@ function renderChart(allTrades) {
   summaryEl.innerHTML = `
     <span class="sum-range">${firstY}.${firstMo} ~ ${lastY}.${lastMo} (${durTxt.trim()})</span>
     <span class="sum-meta">
-      <span class="meta-item">실거래 ${trades.length}건</span>
-      <span class="meta-item">최고 ${fmtPrice(maxVal)}</span>
+<span class="meta-item">최고 ${fmtPrice(maxVal)}</span>
       <span class="meta-item">최저 ${fmtPrice(minVal)}</span>
     </span>
     <span class="sum-change ${cls}">${sign}${fmtPrice(Math.abs(priceDiff))} (${sign}${pct}%)</span>
