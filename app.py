@@ -15,16 +15,27 @@ import html as html_lib
 from zipfile import ZipFile
 from dotenv import load_dotenv
 import time
+from pathlib import Path
 
 # .env 파일에서 환경변수 로드
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="아파트 실거래가 지도")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+@app.on_event("startup")
+async def _startup_naver_token():
+    """서버 시작 시 네이버 JWT 토큰 미리 가져오기"""
+    token = await _refresh_naver_token()
+    if token:
+        logger.info(f"[Naver] 시작 시 토큰 획득 성공: {token[:20]}...")
+    else:
+        logger.warning("[Naver] 시작 시 토큰 획득 실패 — 첫 요청 시 재시도")
 
 # ─── API 설정 ────────────────────────────────────────────────
 TRADE_API_KEY = os.getenv("TRADE_API_KEY")
@@ -723,6 +734,7 @@ async def get_apartments(
                        else "서울"),
             "price": price_val,
             "price_display": format_price(price_val),
+            "main_area_key": main_key,
             "main_area_label": f"{main_key}㎡",
             "built_year": apt.get("buildYear", ""),
             "latest_date": f"{y}.{mo}.{d}",
@@ -1223,12 +1235,30 @@ def _match_snu_admission(name: str) -> dict | None:
 
 
 # ── 네이버 부동산 호가 ────────────────────────────────────────
-NAVER_ASKING_TTL = 3600 * 4  # 4시간 캐시
-_naver_complex_cache: dict = {}   # apt_key -> complex_no
-_naver_asking_cache: dict  = {}   # apt_key -> {price_84, price_59, complex_no, ts, ...}
+NAVER_ASKING_TTL = 3600 * 4   # 호가 캐시 4시간
+NAVER_TOKEN_TTL  = 3600 * 2   # JWT 토큰 캐시 2시간 (만료 3시간이므로 여유 있게)
+_COMPLEX_CACHE_FILE = Path("naver_complex_no.json")  # 영구 complexNo 저장
 
-def _naver_headers() -> dict:
-    """쿠키 포함 Naver 요청 헤더 (환경변수 NAVER_COOKIE 설정 시 적용)"""
+def _load_complex_cache() -> dict:
+    try:
+        if _COMPLEX_CACHE_FILE.exists():
+            return json.loads(_COMPLEX_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_complex_cache(cache: dict) -> None:
+    try:
+        _COMPLEX_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[Naver] complexNo 파일 저장 실패: {e}")
+
+_naver_complex_cache: dict = _load_complex_cache()   # apt_key -> complex_no (영구)
+_naver_asking_cache: dict  = {}   # apt_key -> {price_84, price_59, complex_no, ts, ...}
+_naver_token_cache: dict   = {"token": None, "ts": 0}  # JWT Bearer 토큰
+
+def _naver_base_headers() -> dict:
+    """기본 Naver 요청 헤더"""
     h = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1244,17 +1274,60 @@ def _naver_headers() -> dict:
         h["Cookie"] = cookie
     return h
 
+def _naver_headers() -> dict:
+    """Bearer 토큰 포함 헤더 (캐시된 토큰 사용)"""
+    h = _naver_base_headers()
+    token = _naver_token_cache.get("token")
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
+
+
+async def _refresh_naver_token() -> str | None:
+    """네이버 부동산 페이지에서 JWT 토큰 추출 (3시간 유효)"""
+    import re as _re
+    try:
+        headers = _naver_base_headers()
+        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as c:
+            r = await c.get("https://new.land.naver.com/complexes")
+        m = _re.search(r'"token"\s*:\s*"([A-Za-z0-9._-]+)"', r.text)
+        if m:
+            token = m.group(1)
+            _naver_token_cache["token"] = token
+            _naver_token_cache["ts"]    = time.time()
+            logger.info("[Naver] JWT 토큰 갱신 성공")
+            return token
+    except Exception as e:
+        logger.warning(f"[Naver] 토큰 갱신 실패: {e}")
+    return None
+
+
+async def _get_naver_token() -> str | None:
+    """유효한 JWT 토큰 반환 (만료 시 자동 갱신)"""
+    now = time.time()
+    if _naver_token_cache["token"] and now - _naver_token_cache["ts"] < NAVER_TOKEN_TTL:
+        return _naver_token_cache["token"]
+    return await _refresh_naver_token()
+
 
 async def _naver_get(url: str, params: dict) -> dict | None:
-    """Naver API GET — 429 시 1회 재시도(3초 후)"""
+    """Naver API GET — Bearer 토큰 포함, 401 시 토큰 갱신 후 재시도"""
     import asyncio
-    headers = _naver_headers()
     for attempt in range(2):
+        token = await _get_naver_token()
+        headers = _naver_base_headers()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
             async with httpx.AsyncClient(headers=headers, timeout=7.0) as c:
                 r = await c.get(url, params=params)
             if r.status_code == 200:
                 return r.json()
+            if r.status_code == 401 and attempt == 0:
+                logger.warning("[Naver] 401 — 토큰 만료, 갱신 후 재시도")
+                _naver_token_cache["ts"] = 0  # 강제 갱신
+                continue
             if r.status_code == 429 and attempt == 0:
                 logger.warning(f"Naver 429 — 3초 후 재시도: {url}")
                 await asyncio.sleep(3)
@@ -1268,27 +1341,100 @@ async def _naver_get(url: str, params: dict) -> dict | None:
 
 
 async def _search_naver_complex_no(name: str) -> str | None:
-    """단지명으로 네이버 complexNo 검색"""
-    data = await _naver_get(
-        "https://new.land.naver.com/api/search",
-        {"query": name, "type": "COMPLEX", "page": "1", "pageSize": "5"},
-    )
-    if not data:
-        return None
-    complexes = (
-        (data.get("result") or {}).get("complexList")
-        or data.get("complexList")
-        or []
-    )
-    if not complexes:
-        return None
-    first = complexes[0]
-    no = first.get("complexNo") or first.get("hscpNo") or first.get("no")
-    return str(no) if no else None
+    """단지명 → complexNo 검색
+    1차: land.naver.com 구형 검색 API (가장 안정적)
+    2차: search.naver.com HTML 파싱 (쿠키 없이)
+    """
+    import re as _re
+
+    # ── 1차: 구형 land.naver.com 검색 API (complexCode 직접 반환, 차단 없음)
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://land.naver.com/",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+        }
+        cookie = os.getenv("NAVER_COOKIE", "").strip()
+        if cookie:
+            headers["Cookie"] = cookie
+        async with httpx.AsyncClient(headers=headers, timeout=8.0) as c:
+            r = await c.get(
+                "https://land.naver.com/search/complexSearch.naver",
+                params={"query": name},
+            )
+        if r.status_code == 200:
+            text = r.content.decode("utf-8", errors="replace")
+            # complexCode + complexName 쌍으로 추출
+            pairs = _re.findall(
+                r'"complexCode"\s*:\s*"(\d+)"[^}]*?"complexName"\s*:\s*"([^"]+)"',
+                text,
+            )
+            if not pairs:
+                # complexCode만 추출 (fallback)
+                codes = _re.findall(r'"complexCode"\s*:\s*"(\d+)"', text)
+                if codes:
+                    logger.info(f"[Naver] '{name}' → complexCode {codes[0]} (구형 API, 이름 매칭 불가)")
+                    return codes[0]
+            else:
+                name_norm = _re.sub(r'\s+', '', name)
+                # 이름 정규화 매칭
+                for code, nm in pairs:
+                    nm_norm = _re.sub(r'\s+', '', nm.replace('?', ''))
+                    if name_norm in nm_norm or nm_norm in name_norm:
+                        logger.info(f"[Naver] '{name}' → complexCode {code} '{nm}' (구형 API 이름 매칭)")
+                        return code
+                # 매칭 실패 시 첫 번째 결과 사용
+                code, nm = pairs[0]
+                logger.info(f"[Naver] '{name}' → complexCode {code} '{nm}' (구형 API 첫번째)")
+                return code
+    except Exception as e:
+        logger.warning(f"[Naver] 구형 API 검색 실패: {e}")
+
+    # ── 2차: search.naver.com HTML 파싱 (쿠키 없이 보내야 403 안 남)
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+        }
+        async with httpx.AsyncClient(headers=headers, timeout=8.0, follow_redirects=True) as c:
+            r = await c.get(
+                "https://search.naver.com/search.naver",
+                params={"query": name + " 아파트", "where": "nexearch"},
+            )
+        nos = _re.findall(r'new\.land\.naver\.com/complexes/(\d+)', r.text)
+        if nos:
+            logger.info(f"[Naver] '{name}' → complexNo {nos[0]} (naver search)")
+            return nos[0]
+    except Exception as e:
+        logger.warning(f"[Naver] 단지 검색 실패: {e}")
+    return None
 
 
-async def _fetch_naver_asking(complex_no: str) -> dict:
-    """complexNo → 84㎡/59㎡ 매매 호가 최저가 (만원 단위)"""
+def _parse_naver_price(s: str) -> int | None:
+    """'12억 5,000' 또는 '125000' → 만원 정수"""
+    import re as _re
+    s = s.replace(",", "").strip()
+    m = _re.match(r'^(\d+)억\s*(\d+)?$', s)
+    if m:
+        return int(m.group(1)) * 10000 + (int(m.group(2)) if m.group(2) else 0)
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
+async def _fetch_naver_asking(complex_no: str, main_area: int = 0) -> dict:
+    """complexNo → 매매 호가 최저가 (main_area 기준, 없으면 최소가 면적)"""
     data = await _naver_get(
         f"https://new.land.naver.com/api/articles/complex/{complex_no}",
         {"realEstateType": "APT", "tradeType": "A1", "page": "1", "pageSize": "50"},
@@ -1296,32 +1442,51 @@ async def _fetch_naver_asking(complex_no: str) -> dict:
     if not data:
         return {}
     articles = data.get("articleList") or data.get("articles") or []
+    # 첫 매물 필드 디버깅
+    if articles:
+        logger.debug(f"[네이버 호가] complex {complex_no} 첫 매물 keys: {list(articles[0].keys())[:15]}")
+        logger.debug(f"[네이버 호가] complex {complex_no} 첫 매물 샘플: area2={articles[0].get('area2')} exclusiveArea={articles[0].get('exclusiveArea')} dealOrWarrantPrc={articles[0].get('dealOrWarrantPrc')} price={articles[0].get('price')}")
 
     prices: dict[int, list[int]] = {}
     for art in articles:
-        area_str  = art.get("area2") or art.get("exclusiveArea") or art.get("representativeArea") or ""
-        price_str = art.get("dealOrWarrantPrc") or art.get("price") or ""
+        area_str  = art.get("area2") or art.get("exclusiveArea") or ""
+        price_str = str(art.get("dealOrWarrantPrc") or art.get("price") or "")
         try:
-            area  = int(float(str(area_str).replace(",", "")))
-            price = int(str(price_str).replace(",", "").replace(" ", ""))  # 만원
-            if area > 0 and price > 0:
+            area = int(float(str(area_str).replace(",", "")))
+            price = _parse_naver_price(price_str)
+            if area > 0 and price and price > 0:
                 prices.setdefault(area, []).append(price)
         except (ValueError, TypeError):
             continue
 
+    if not prices:
+        logger.info(f"[네이버 호가] complex {complex_no}: 매물 없음")
+        return {}
+
+    # main_area 기준 ±5㎡ 내 최저가, 없으면 전체 최저가
     result: dict = {}
-    for area_key in [84, 59]:
-        matches = [p for a, lst in prices.items() for p in lst if abs(a - area_key) <= 3]
-        if matches:
-            mn = min(matches)
-            result[f"price_{area_key}"]         = mn
-            result[f"price_{area_key}_display"] = format_price(mn)
-    logger.info(f"[네이버 호가] complex {complex_no}: {result}")
+    target_areas = [a for a in prices if main_area and abs(a - main_area) <= 5]
+    if not target_areas:
+        target_areas = list(prices.keys())  # 모든 면적 중 최저가
+
+    all_prices = [p for a in target_areas for p in prices[a]]
+    if all_prices:
+        mn = min(all_prices)
+        result["price_display"] = format_price(mn)
+        result["price"] = mn
+        # 기존 호환성 유지
+        result["price_84_display"] = result["price_display"]
+
+    logger.info(f"[네이버 호가] complex {complex_no} (main_area={main_area}): {result.get('price_display')}")
     return result
 
 
 @app.get("/api/naver-asking")
-async def get_naver_asking(key: str = Query(...), name: str = Query(...)):
+async def get_naver_asking(
+    key:  str = Query(...),
+    name: str = Query(...),
+    area: int = Query(default=0),   # main_area_key (㎡)
+):
     """단지 네이버 호가 + complexNo 반환 (캐시 4시간)"""
     now = time.time()
     cached = _naver_asking_cache.get(key)
@@ -1333,11 +1498,13 @@ async def get_naver_asking(key: str = Query(...), name: str = Query(...)):
         complex_no = await _search_naver_complex_no(name)
         if complex_no:
             _naver_complex_cache[key] = complex_no
+            _save_complex_cache(_naver_complex_cache)
 
     if not complex_no:
+        _naver_asking_cache[key] = {"error": "not_found", "ts": now - NAVER_ASKING_TTL + 1800}
         return {"error": "not_found"}
 
-    prices = await _fetch_naver_asking(complex_no)
+    prices = await _fetch_naver_asking(complex_no, main_area=area)
     result = {"complex_no": complex_no, "ts": now, **prices}
     _naver_asking_cache[key] = result
     return result

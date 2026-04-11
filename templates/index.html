@@ -173,7 +173,7 @@
     }
     .price-tag.active::after { border-top-color: var(--red); }
     .price-tag .apt-name {
-      font-size: 10px;
+      font-size: 12px;
       font-weight: 500;
       opacity: .9;
       margin-bottom: 1px;
@@ -482,11 +482,20 @@
       white-space: nowrap;
       text-align: right;
     }
+    /* ── 고정 상단 / 스크롤 영역 ── */
+    #sheet-fixed {
+      flex-shrink: 0;
+    }
+    #sheet-scroll {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
     /* ── 차트 영역 ── */
     #sheet-chart-wrap {
       padding: 8px 16px 6px;
       border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
       position: relative;
     }
     #sheet-chart-wrap canvas { width: 100% !important; }
@@ -637,9 +646,6 @@
     .volume-compare.down { color: #2563eb; }
     .volume-compare.flat { color: var(--gray); }
     #sheet-trades {
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-      flex: 1;
       padding-bottom: var(--safe-bottom);
     }
 
@@ -920,6 +926,15 @@
     .price-tag.naver-mode::after { border-top-color: #379360;}
     .price-tag .naver-cmp { font-size: 9px; font-weight: 500; opacity: .9; }
     .price-tag .naver-avg { font-size: 9px; font-weight: 400; opacity: .75; margin-left: 3px; }
+    /* 매/실 행 레이아웃 */
+    .price-tag .px-row { display: block; font-size: 12px; font-weight: 700; line-height: 1.25; }
+    .price-tag .px-row.px-mae { font-size: 11px; color: #6ee7b7; }
+    .price-tag .px-lbl { font-size: 9px; font-weight: 600; opacity: .9; margin-right: 1px; }
+    .price-tag .px-area { font-size: 9px; font-weight: 400; opacity: .75; margin-left: 2px; }
+    /* 마커 내 KB 지수 */
+    .price-tag .kb-apt { display: block; font-size: 9px; font-weight: 400; opacity: .75; margin-top: 1px; }
+    .price-tag .kb-apt .kb-up   { color: #fca5a5; }
+    .price-tag .kb-apt .kb-down { color: #93c5fd; }
     /* 네이버 매물 시트 */
     #naver-sheet {
       position: fixed; bottom: 0; left: 0; right: 0;
@@ -1186,45 +1201,50 @@
 
 <!-- 하단 시트 (상세) -->
 <div id="sheet">
-  <div id="sheet-handle"></div>
-  <button id="sheet-close">✕</button>
-  <div id="sheet-header">
-    <div id="sheet-name-row">
-      <div id="sheet-name"></div>
-      <div id="sheet-meta">
-        <span id="sheet-meta-built"></span>
-        <span id="sheet-meta-addr"></span>
+  <!-- 고정 상단 영역 (아래로 드래그 → 닫힘) -->
+  <div id="sheet-fixed">
+    <div id="sheet-handle"></div>
+    <button id="sheet-close">✕</button>
+    <div id="sheet-header">
+      <div id="sheet-name-row">
+        <div id="sheet-name"></div>
+        <div id="sheet-meta">
+          <span id="sheet-meta-built"></span>
+          <span id="sheet-meta-addr"></span>
+        </div>
+      </div>
+      <div id="sheet-detail"></div>
+      <div id="sheet-dong-compare"></div>
+    </div>
+    <div id="sheet-price-row">
+      <!-- 평형 드롭다운 -->
+      <div id="sheet-area-list"></div>
+      <div id="sheet-price-wrap">
+        <div id="sheet-price-main">
+          <div id="sheet-price"></div>
+          <div id="sheet-price-date"></div>
+        </div>
+        <div id="sheet-price-right">
+          <div id="sheet-price-avg"></div>
+          <a id="sheet-naver-link" href="#" target="_blank" rel="noopener">네이버 매물</a>
+        </div>
       </div>
     </div>
-    <div id="sheet-detail"></div>
-    <div id="sheet-dong-compare"></div>
   </div>
-  <div id="sheet-price-row">
-    <!-- 평형 드롭다운 -->
-    <div id="sheet-area-list"></div>
-    <div id="sheet-price-wrap">
-      <div id="sheet-price-main">
-        <div id="sheet-price"></div>
-        <div id="sheet-price-date"></div>
+  <!-- 스크롤 영역 (차트 + 거래내역) -->
+  <div id="sheet-scroll">
+    <div id="sheet-chart-wrap">
+      <div id="chart-summary"></div>
+      <div id="chart-period-tabs">
+        <button class="chart-tab" data-months="6">6개월</button>
+        <button class="chart-tab active" data-months="12">12개월</button>
+        <button class="chart-tab" data-months="24">24개월</button>
       </div>
-      <div id="sheet-price-right">
-        <div id="sheet-price-avg"></div>
-        <a id="sheet-naver-link" href="#" target="_blank" rel="noopener">네이버 매물</a>
-      </div>
+      <div id="chart-click-price"></div>
+      <canvas id="sheet-chart" height="90"></canvas>
     </div>
+    <div id="sheet-trades"></div>
   </div>
-  <!-- 가격 추이 차트 -->
-  <div id="sheet-chart-wrap">
-    <div id="chart-summary"></div>
-    <div id="chart-period-tabs">
-      <button class="chart-tab" data-months="6">6개월</button>
-      <button class="chart-tab active" data-months="12">12개월</button>
-      <button class="chart-tab" data-months="24">24개월</button>
-    </div>
-    <div id="chart-click-price"></div>
-    <canvas id="sheet-chart" height="90"></canvas>
-  </div>
-  <div id="sheet-trades"></div>
 </div>
 
 
@@ -2107,8 +2127,6 @@ function showAptMarkers() {
       entry = createAptMarker(apt, pos);
       entry.apt = apt;
       _aptPool.set(apt.key, entry);
-      // 네이버 모드 활성 중이면 새 마커에도 오버레이 적용
-      if (naverMode) applyNaverMode();
     }
     entry.marker.setMap(inBounds ? map : null);
     if (inBounds) count++;
@@ -2179,25 +2197,28 @@ function showDistrictMarkers() {
 }
 
 // ── 마커 생성 (풀용) ──────────────────────────────────────
-function aptMarkerHTML(apt, naver) {
+function aptMarkerHTML(apt) {
   const crown = apt.is_champion ? '<span class="crown">👑</span>' : '';
-  if (naver) {
-    // 호가(네이버) → 실거래 84/59 → 전체 실거래 순으로 표시
-    const price = apt.naver_asking_display || apt.naver_price_display || apt.price_display;
-    const avgLabel = apt.naver_asking_display ? '실거래' : '평균';
-    const avgVal   = apt.naver_asking_display ? (apt.naver_price_display || apt.naver_avg_display) : apt.naver_avg_display;
-    const avg = avgVal ? `<span class="naver-avg">${avgLabel} ${avgVal}</span>` : '';
-    return `<div class="apt-name">${crown}${apt.name}</div>${price}${avg}`;
-  }
-  const built = apt.built_year ? `<span class="built">${apt.built_year}년 입주</span>` : '';
-  return `<div class="apt-name">${crown}${apt.name}</div>${apt.price_display}<span class="sub">${apt.main_area_label}</span>${built}`;
+  const area = apt.main_area_label ? `<span class="px-area">${apt.main_area_label}</span>` : '';
+  const sil = `<div class="px-row"><span class="px-lbl">실</span>${apt.price_display}${area}</div>`;
+  return `<div class="apt-name">${crown}${apt.name}</div>${sil}`;
+}
+
+function kbAptHtml(district) {
+  if (!district) return '';
+  const info = kbIndexData[district];
+  if (!info || !info.index) return '';
+  const sign = info.change > 0 ? '▲' : info.change < 0 ? '▼' : '';
+  const cls  = info.change > 0 ? 'kb-up' : info.change < 0 ? 'kb-down' : '';
+  const abs  = Math.abs(info.change).toFixed(2);
+  const chg  = sign ? `<span class="${cls}">${sign}${abs}%</span>` : `${abs}%`;
+  return `<span class="kb-apt">KB ${info.index.toFixed(2)} ${chg}</span>`;
 }
 
 function createAptMarker(apt, pos) {
   const el = document.createElement('div');
-  el.className = 'price-tag' + (apt.is_champion ? ' champion' : '') + (naverMode ? ' naver-mode' : '');
-  el.innerHTML = aptMarkerHTML(apt, naverMode);
-  if (naverMode) fetchNaverAsking(apt).then(asking => applyNaverAskingToMarker(el, apt, asking));
+  el.className = 'price-tag' + (apt.is_champion ? ' champion' : '');
+  el.innerHTML = aptMarkerHTML(apt);
 
   const marker = new naver.maps.Marker({
     position: pos,
@@ -2213,11 +2234,7 @@ function createAptMarker(apt, pos) {
     el.classList.add('active');
     activeMarkerEl = el;
     activeAptKey = apt.key;
-    if (naverMode) {
-      openNaverSheet(apt);
-    } else {
-      openSheet(apt);
-    }
+    openSheet(apt);
   });
 
   return { marker, el, apt };
@@ -2250,46 +2267,9 @@ function naverSearchUrl(apt) {
   return `https://new.land.naver.com/search?query=${encodeURIComponent(apt.name)}`;
 }
 
-const _naverAskingCache = {};  // apt.key → {price_84_display, price_59_display, complex_no, ...}
 
-async function fetchNaverAsking(apt) {
-  if (_naverAskingCache[apt.key]) return _naverAskingCache[apt.key];
-  try {
-    const r = await fetch(`/api/naver-asking?key=${encodeURIComponent(apt.key)}&name=${encodeURIComponent(apt.name)}`);
-    const d = await r.json();
-    if (!d.error) {
-      _naverAskingCache[apt.key] = d;
-      return d;
-    }
-  } catch (e) { console.warn('Naver asking fetch failed:', e); }
-  return null;
-}
-
-function applyNaverAskingToMarker(el, apt, asking) {
-  if (!asking) return;
-  const price = asking.price_84_display || asking.price_59_display;
-  if (!price) return;
-  apt.naver_asking_display = price;
-  el.innerHTML = aptMarkerHTML(apt, true);
-}
-
-function applyNaverMode() {
-  _aptPool.forEach(({ el, apt }) => {
-    if (!apt) return;
-    el.className = 'price-tag naver-mode' + (apt.is_champion ? ' champion' : '');
-    el.innerHTML = aptMarkerHTML(apt, true);
-    // 호가 비동기 로드
-    fetchNaverAsking(apt).then(asking => applyNaverAskingToMarker(el, apt, asking));
-  });
-}
-
-function revertNaverMode() {
-  _aptPool.forEach(({ el, apt }) => {
-    if (!apt) return;
-    el.className = 'price-tag' + (apt.is_champion ? ' champion' : '');
-    el.innerHTML = aptMarkerHTML(apt, false);
-  });
-}
+function applyNaverMode() {}
+function revertNaverMode() {}
 
 function openNaverSheet(apt) {
   const pref = REGION_PREFIX[apt.region || currentRegion] || '서울특별시';
@@ -2304,14 +2284,12 @@ function openNaverSheet(apt) {
 
   const listEl = document.getElementById('naver-sheet-list');
 
-  function renderNaverList(complexUrl) {
-    const aptUrl  = complexUrl || searchUrl;
-    const aptInfo = complexUrl ? '매물 리스트 직접 열기' : '단지 검색 (complexNo 로딩 중...)';
+  function renderNaverList(_) {
     listEl.innerHTML = `
-      <a class="naver-article apt-link" id="naver-apt-link" href="${aptUrl}" target="_blank" rel="noopener">
+      <a class="naver-article apt-link" href="${searchUrl}" target="_blank" rel="noopener">
         <div style="flex:1">
           <div class="naver-article-price">"${apt.name}" 매물 보기</div>
-          <div class="naver-article-info">${aptInfo}</div>
+          <div class="naver-article-info">네이버 부동산에서 매물 검색</div>
         </div>
         <span class="naver-article-arrow">›</span>
       </a>
@@ -2325,26 +2303,8 @@ function openNaverSheet(apt) {
     `;
   }
 
-  // 캐시에 complexNo 있으면 즉시 직접 링크, 없으면 search 링크로 먼저 렌더
-  const cached = _naverAskingCache[apt.key];
-  const cachedComplexUrl = cached?.complex_no
-    ? `https://new.land.naver.com/complexes/${cached.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`
-    : null;
-  renderNaverList(cachedComplexUrl);
-
+  renderNaverList(null);
   document.getElementById('naver-sheet').classList.add('open');
-
-  // 호가 + complexNo 비동기 로드
-  fetchNaverAsking(apt).then(asking => {
-    if (!asking) return;
-    const hp = asking.price_84_display || asking.price_59_display;
-    if (hp) subEl.textContent = `호가 ${hp} · 실거래 ${apt.naver_price_display || apt.price_display}`;
-    // complexNo 받으면 단지 직접 링크로 교체
-    if (asking.complex_no) {
-      const directUrl = `https://new.land.naver.com/complexes/${asking.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`;
-      renderNaverList(directUrl);
-    }
-  });
 }
 
 document.getElementById('naver-sheet-close').addEventListener('click', closeNaverSheet);
@@ -2379,17 +2339,7 @@ async function openSheet(apt) {
   document.getElementById('sheet-meta-built').textContent = builtTxt;
   document.getElementById('sheet-meta-addr').textContent = addr;
   const naverLinkEl = document.getElementById('sheet-naver-link');
-  // 캐시에 complexNo 있으면 즉시 직접 링크
-  const _cached = _naverAskingCache[apt.key];
-  naverLinkEl.href = (_cached?.complex_no)
-    ? `https://new.land.naver.com/complexes/${_cached.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`
-    : naverSearchUrl(apt);
-  // 백그라운드에서 complexNo 받으면 링크 교체
-  fetchNaverAsking(apt).then(asking => {
-    if (asking?.complex_no) {
-      naverLinkEl.href = `https://new.land.naver.com/complexes/${asking.complex_no}?ms=${apt.lat},${apt.lng},17&a=APT&b=A1`;
-    }
-  });
+  naverLinkEl.href = naverSearchUrl(apt);
 
   // 상세정보 로딩
   const detailEl = document.getElementById('sheet-detail');
@@ -2977,17 +2927,17 @@ function refreshData() {
 }
 
 // ── 바텀시트 스와이프 닫기 ──────────────────────────────────
-// 시트 어디서나 아래로 50px 이상 드래그하면 닫힘
-// 단, 거래 리스트가 스크롤된 상태(scrollTop > 0)에서는 닫히지 않음
+// 고정 상단(평형·가격 영역)에서 아래로 드래그할 때만 닫힘
+// 그래프·거래내역 영역은 스와이프로 닫히지 않음
 (function initSwipe() {
-  const sheet      = document.getElementById('sheet');
-  const tradesEl   = document.getElementById('sheet-trades');
-  let startY = 0, startTradesScrollTop = 0;
+  const sheet   = document.getElementById('sheet');
+  const fixedEl = document.getElementById('sheet-fixed');
+  let startY = 0, startedOnFixed = false;
   let dragging = false;
 
   sheet.addEventListener('touchstart', e => {
     startY = e.touches[0].clientY;
-    startTradesScrollTop = tradesEl ? tradesEl.scrollTop : 0;
+    startedOnFixed = fixedEl.contains(e.target);
     dragging = true;
   }, { passive: true });
 
@@ -2995,8 +2945,7 @@ function refreshData() {
     if (!dragging) return;
     dragging = false;
     const dy = e.changedTouches[0].clientY - startY;
-    // 아래로 50px 이상 & 거래 리스트가 최상단일 때만 닫기
-    if (dy > 50 && startTradesScrollTop <= 0) closeSheet();
+    if (dy > 50 && startedOnFixed) closeSheet();
   }, { passive: true });
 })();
 
@@ -3074,8 +3023,8 @@ document.getElementById('chart-period-tabs')?.addEventListener('click', async e 
 });
 
 // 거래 리스트 스크롤 감지 → 무한 로드
-document.getElementById('sheet-trades').addEventListener('scroll', () => {
-  const el = document.getElementById('sheet-trades');
+document.getElementById('sheet-scroll').addEventListener('scroll', () => {
+  const el = document.getElementById('sheet-scroll');
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
     loadMoreTrades();
   }
