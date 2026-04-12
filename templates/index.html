@@ -3122,41 +3122,41 @@ async function startApp() {
   buildRegionTabs();
   buildDistrictBar();
   buildFilterBar();
-  loadKbIndex(); // 백그라운드로 KB 지수 로드 (비차단)
 
-  // GPS + geocoder 준비를 병렬로 처리
-  const [gpsResult] = await Promise.all([
-    // GPS: 내 위치 이동 (geocoder 없이도 지도 이동은 가능)
-    new Promise(resolve => {
-      if (!navigator.geolocation) { resolve(null); return; }
-      navigator.geolocation.getCurrentPosition(pos => {
-        map.setCenter(new naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude));
-        map.setZoom(12); // 구/시 클러스터가 보이는 줌으로 시작
-        resolve(pos);
-      }, () => resolve(null), { timeout: 5000 });
-    }),
-    // geocoder 준비
-    waitForGeocoder(10000).catch(() => {}),
-  ]);
-
-  // geocoder 준비됐으면 역지오코딩으로 정확한 구/동 판별
-  if (gpsResult && window.naver?.maps?.Service?.reverseGeocode) {
-    const latlng = new naver.maps.LatLng(gpsResult.coords.latitude, gpsResult.coords.longitude);
-    const found  = await detectLocationByReverseGeocode(latlng);
-    if (found) {
-      currentRegion      = found.region;
-      currentDistrict    = found.district;
-      myLocationDong     = found.dong;
-      myLocationDistrict = found.district;
-      myLocationLatLng   = latlng;
-      document.querySelectorAll('.rtab').forEach(b =>
-        b.classList.toggle('active', b.dataset.region === currentRegion));
-      buildDistrictBar();
-    }
-  }
-
-  // 구 마커만 표시 — 실제 데이터는 구 마커 클릭 시 로드 (지연 로딩)
+  // 구 마커 즉시 표시 — GPS/geocoder 대기 없음
   updateVisibleMarkers();
+
+  loadKbIndex(); // 백그라운드로 KB 지수 로드
+
+  // GPS + geocoder 는 완전 백그라운드 — 완료되면 지도 중심 이동 + 구 탭 업데이트
+  (async () => {
+    const [gpsResult] = await Promise.all([
+      new Promise(resolve => {
+        if (!navigator.geolocation) { resolve(null); return; }
+        navigator.geolocation.getCurrentPosition(pos => {
+          map.setCenter(new naver.maps.LatLng(pos.coords.latitude, pos.coords.longitude));
+          map.setZoom(12);
+          resolve(pos);
+        }, () => resolve(null), { timeout: 5000 });
+      }),
+      waitForGeocoder(10000).catch(() => {}),
+    ]);
+
+    if (gpsResult && window.naver?.maps?.Service?.reverseGeocode) {
+      const latlng = new naver.maps.LatLng(gpsResult.coords.latitude, gpsResult.coords.longitude);
+      const found  = await detectLocationByReverseGeocode(latlng);
+      if (found) {
+        currentRegion      = found.region;
+        currentDistrict    = found.district;
+        myLocationDong     = found.dong;
+        myLocationDistrict = found.district;
+        myLocationLatLng   = latlng;
+        document.querySelectorAll('.rtab').forEach(b =>
+          b.classList.toggle('active', b.dataset.region === currentRegion));
+        buildDistrictBar();
+      }
+    }
+  })();
 }
 
 startApp();
