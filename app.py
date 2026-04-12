@@ -37,6 +37,13 @@ async def _startup_naver_token():
     else:
         logger.warning("[Naver] 시작 시 토큰 획득 실패 — 첫 요청 시 재시도")
 
+@app.on_event("shutdown")
+async def _shutdown_http_client():
+    """서버 종료 시 공유 HTTP 클라이언트 정리"""
+    global _shared_client
+    if _shared_client and not _shared_client.is_closed:
+        await _shared_client.aclose()
+
 # ─── API 설정 ────────────────────────────────────────────────
 TRADE_API_KEY = os.getenv("TRADE_API_KEY")
 NAVER_MAPS_KEY = os.getenv("NAVER_MAPS_KEY")
@@ -115,6 +122,18 @@ _cache: dict = {"apartments": {}}
 _raw_period_cache: dict = {}
 # 단지 상세정보 캐시 (건축물대장)
 _bldg_info_cache: dict = {}
+
+# ─── 공유 HTTP 클라이언트 (커넥션 풀링으로 TCP 오버헤드 최소화) ──
+_shared_client: httpx.AsyncClient | None = None
+
+def _get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=15, keepalive_expiry=60),
+        )
+    return _shared_client
 
 # ─── 좌표 캐시 (파일 영속) ────────────────────────────────────
 GEO_CACHE_FILE = "geo_cache.json"
@@ -254,15 +273,15 @@ def format_price(manwon: int) -> str:
 
 
 async def _fetch(url: str, label: str) -> list:
-    """공통 API 호출"""
+    """공통 API 호출 (공유 클라이언트로 커넥션 재사용)"""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.get(url)
-            if r.status_code == 200:
-                items = xml_items(r.text)
-                logger.info(f"  {label} {len(items)}건")
-                return items
-            logger.warning(f"  {label} HTTP {r.status_code}")
+        client = _get_shared_client()
+        r = await client.get(url)
+        if r.status_code == 200:
+            items = xml_items(r.text)
+            logger.info(f"  {label} {len(items)}건")
+            return items
+        logger.warning(f"  {label} HTTP {r.status_code}")
     except Exception as e:
         logger.error(f"fetch error {label}: {e}")
     return []
@@ -552,8 +571,8 @@ async def get_apartments(
     import asyncio
     lawd_codes = DISTRICTS[district]
 
-    # quick=True: 3개월만 먼저 조회 (초기 응답 속도 우선)
-    months = 3 if quick else 12
+    # quick=True: 1개월만 먼저 조회 (초기 응답 속도 최우선)
+    months = 1 if quick else 12
     deal_yms = get_recent_deal_yms(months)
 
     tasks = []
@@ -1343,12 +1362,19 @@ async def _naver_get(url: str, params: dict) -> dict | None:
 
 async def _search_naver_complex_no(name: str) -> str | None:
     """단지명 → complexNo 검색
-    1차: land.naver.com 구형 검색 API (가장 안정적)
-    2차: search.naver.com HTML 파싱 (쿠키 없이)
+    1차: land.naver.com 구형 검색 API
+    2차: search.naver.com HTML 파싱
+    ※ 이름 매칭 실패 시 None 반환 (잘못된 단지 캐싱 방지)
     """
     import re as _re
 
-    # ── 1차: 구형 land.naver.com 검색 API (complexCode 직접 반환, 차단 없음)
+    def _name_match(query: str, candidate: str) -> bool:
+        """단지명 유사도 검사 — 공백·특수문자 제거 후 포함 여부"""
+        q = _re.sub(r'[\s\-·]', '', query)
+        c = _re.sub(r'[\s\-·?]', '', candidate)
+        return q in c or c in q
+
+    # ── 1차: 구형 land.naver.com 검색 API
     try:
         headers = {
             "User-Agent": (
@@ -1370,33 +1396,20 @@ async def _search_naver_complex_no(name: str) -> str | None:
             )
         if r.status_code == 200:
             text = r.content.decode("utf-8", errors="replace")
-            # complexCode + complexName 쌍으로 추출
             pairs = _re.findall(
                 r'"complexCode"\s*:\s*"(\d+)"[^}]*?"complexName"\s*:\s*"([^"]+)"',
                 text,
             )
-            if not pairs:
-                # complexCode만 추출 (fallback)
-                codes = _re.findall(r'"complexCode"\s*:\s*"(\d+)"', text)
-                if codes:
-                    logger.info(f"[Naver] '{name}' → complexCode {codes[0]} (구형 API, 이름 매칭 불가)")
-                    return codes[0]
-            else:
-                name_norm = _re.sub(r'\s+', '', name)
-                # 이름 정규화 매칭
-                for code, nm in pairs:
-                    nm_norm = _re.sub(r'\s+', '', nm.replace('?', ''))
-                    if name_norm in nm_norm or nm_norm in name_norm:
-                        logger.info(f"[Naver] '{name}' → complexCode {code} '{nm}' (구형 API 이름 매칭)")
-                        return code
-                # 매칭 실패 시 첫 번째 결과 사용
-                code, nm = pairs[0]
-                logger.info(f"[Naver] '{name}' → complexCode {code} '{nm}' (구형 API 첫번째)")
-                return code
+            for code, nm in pairs:
+                if _name_match(name, nm):
+                    logger.info(f"[Naver] '{name}' → complexCode {code} '{nm}' (구형 API)")
+                    return code
+            if pairs:
+                logger.info(f"[Naver] '{name}' 구형 API 이름 매칭 실패 (후보: {[nm for _, nm in pairs[:3]]})")
     except Exception as e:
         logger.warning(f"[Naver] 구형 API 검색 실패: {e}")
 
-    # ── 2차: search.naver.com HTML 파싱 (쿠키 없이 보내야 403 안 남)
+    # ── 2차: search.naver.com HTML 파싱
     try:
         headers = {
             "User-Agent": (
@@ -1412,12 +1425,27 @@ async def _search_naver_complex_no(name: str) -> str | None:
                 "https://search.naver.com/search.naver",
                 params={"query": name + " 아파트", "where": "nexearch"},
             )
+        # complexNo 뒤에 나오는 단지명도 함께 추출해서 이름 검증
+        hits = _re.findall(
+            r'new\.land\.naver\.com/complexes/(\d+)[^"]*"[^"]*complexName[^"]*"[^"]*"([^"]+)"',
+            r.text,
+        )
+        for no, nm in hits:
+            if _name_match(name, nm):
+                logger.info(f"[Naver] '{name}' → complexNo {no} '{nm}' (naver search)")
+                return no
+        # 이름 검증 없이 단순 추출 (complexNo만 있는 경우) — 1개만 있을 때만 신뢰
         nos = _re.findall(r'new\.land\.naver\.com/complexes/(\d+)', r.text)
-        if nos:
-            logger.info(f"[Naver] '{name}' → complexNo {nos[0]} (naver search)")
-            return nos[0]
+        unique = list(dict.fromkeys(nos))
+        if len(unique) == 1:
+            logger.info(f"[Naver] '{name}' → complexNo {unique[0]} (naver search 단일결과)")
+            return unique[0]
+        if unique:
+            logger.info(f"[Naver] '{name}' naver search 복수결과 매칭 실패 (후보 {len(unique)}개)")
     except Exception as e:
         logger.warning(f"[Naver] 단지 검색 실패: {e}")
+
+    logger.info(f"[Naver] '{name}' complexNo 찾기 실패")
     return None
 
 

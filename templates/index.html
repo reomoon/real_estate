@@ -2339,7 +2339,18 @@ async function openSheet(apt) {
   document.getElementById('sheet-meta-built').textContent = builtTxt;
   document.getElementById('sheet-meta-addr').textContent = addr;
   const naverLinkEl = document.getElementById('sheet-naver-link');
-  naverLinkEl.href = naverSearchUrl(apt);
+  naverLinkEl.href = naverSearchUrl(apt); // 기본값 (좌표 검색)
+
+  // complex_no 백그라운드 조회 → 직접 단지 링크로 업데이트
+  const mainArea = apt.main_area_key || 0;
+  fetch(`/api/naver-asking?key=${encodeURIComponent(apt.key)}&name=${encodeURIComponent(apt.name)}&area=${mainArea}`)
+    .then(r => r.json())
+    .then(d => {
+      if (d.complex_no) {
+        naverLinkEl.href = `https://new.land.naver.com/complexes/${d.complex_no}`;
+      }
+    })
+    .catch(() => {});
 
   // 상세정보 로딩
   const detailEl = document.getElementById('sheet-detail');
@@ -2586,16 +2597,23 @@ async function openDistrictVolumeSheet(districtName) {
     });
 
     const info = kbIndexData[districtName];
-    const curTotal = curYearData.filter(v => v != null).reduce((a, b) => a + b, 0);
-    const prevTotal = prevYearData.filter(v => v != null).reduce((a, b) => a + b, 0);
-    const diffPct = prevTotal ? Math.round((curTotal - prevTotal) / prevTotal * 100) : null;
+
+    // 저번달 기준 수치
+    const lastMonth = curMonth === 1 ? 12 : curMonth - 1;
+    const lastMonthYear = curMonth === 1 ? curYear - 1 : curYear;
+    const lastMonthYm = `${lastMonthYear}${String(lastMonth).padStart(2, '0')}`;
+    const sameMonthPrevYearYm = `${lastMonthYear - 1}${String(lastMonth).padStart(2, '0')}`;
+    const lastMonthCount = monthlyTrades[lastMonthYm] ?? 0;
+    const sameMonthPrevCount = monthlyTrades[sameMonthPrevYearYm] ?? 0;
+    const diffPct = sameMonthPrevCount ? Math.round((lastMonthCount - sameMonthPrevCount) / sameMonthPrevCount * 100) : null;
+    const monthLabel = `${lastMonth}월`;
 
     document.getElementById('volume-sheet-name').textContent = districtName;
     document.getElementById('volume-sheet-sub').textContent =
       info?.index ? `KB지수 ${info.index.toFixed(2)} ${info.change > 0 ? '▲' : info.change < 0 ? '▼' : ''}${Math.abs(info.change).toFixed(2)}%` : '연도별 매매 거래량';
     document.getElementById('volume-stats').innerHTML = `
-      <span class="stat-item">${curYear}년 ${curTotal.toLocaleString()}건</span>
-      <span class="stat-item">${prevYear}년 ${prevTotal.toLocaleString()}건</span>
+      <span class="stat-item">${lastMonthYear}년 ${monthLabel} ${lastMonthCount.toLocaleString()}건</span>
+      <span class="stat-item">${lastMonthYear - 1}년 ${monthLabel} ${sameMonthPrevCount.toLocaleString()}건</span>
       ${diffPct != null ? `<span class="stat-item volume-compare ${diffPct > 0 ? 'up' : diffPct < 0 ? 'down' : 'flat'}">${diffPct > 0 ? '▲' : diffPct < 0 ? '▼' : ''}${Math.abs(diffPct)}%</span>` : ''}
     `;
 
