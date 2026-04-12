@@ -2275,8 +2275,8 @@ function openNaverSheet(apt) {
   const pref = REGION_PREFIX[apt.region || currentRegion] || '서울특별시';
   const dist = DISTRICT_GEO_NAME[apt.district] || apt.district;
   const searchUrl = naverSearchUrl(apt);
-  const ms = (apt.lat && apt.lng) ? `&ms=${apt.lat},${apt.lng},16` : '';
-  const dongSearchUrl = `https://new.land.naver.com/search?query=${encodeURIComponent(pref + ' ' + dist + ' ' + apt.dong)}${ms}`;
+  const dongQuery = encodeURIComponent(pref + ' ' + dist + ' ' + apt.dong);
+  const dongSearchUrl = `https://new.land.naver.com/search?query=${dongQuery}${apt.lat && apt.lng ? `&ms=${apt.lat},${apt.lng},16` : ''}`;
 
   document.getElementById('naver-sheet-title').textContent = apt.name;
   const subEl = document.getElementById('naver-sheet-sub');
@@ -2547,7 +2547,7 @@ async function openDistrictVolumeSheet(districtName) {
   setLoading(true, `${districtName} 거래량 불러오는 중...`, '');
   try {
     let monthlyTrades = districtMemCache[districtName]?.monthly_trades || {};
-    if (Object.keys(monthlyTrades).length < 18) {
+    if (Object.keys(monthlyTrades).length < 50) {
       const res = await fetch(`/api/district-volume?district=${encodeURIComponent(districtName)}`);
       const data = await res.json();
       monthlyTrades = data.monthly_trades || {};
@@ -2557,19 +2557,46 @@ async function openDistrictVolumeSheet(districtName) {
       };
     }
 
-    const monthly = normalizeMonthlyTrades(monthlyTrades);
-    const previous = monthly.map(item => monthlyTrades?.[yearAgoYm(item.ym)] || 0);
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const curMonth = now.getMonth() + 1;
+    const prevYear = curYear - 1;
+    const labels = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
+
+    // 올해 데이터 (미래 월은 null)
+    const curYearData = labels.map((_, i) => {
+      const m = i + 1;
+      if (m > curMonth) return null;
+      const ym = `${curYear}${String(m).padStart(2, '0')}`;
+      return monthlyTrades[ym] ?? 0;
+    });
+
+    // 작년 데이터
+    const prevYearData = labels.map((_, i) => {
+      const ym = `${prevYear}${String(i + 1).padStart(2, '0')}`;
+      return monthlyTrades[ym] ?? null;
+    });
+
+    // 5년 평균 (curYear-5 ~ curYear-1)
+    const avgYears = [curYear - 5, curYear - 4, curYear - 3, curYear - 2, curYear - 1];
+    const avgData = labels.map((_, i) => {
+      const month = String(i + 1).padStart(2, '0');
+      const vals = avgYears.map(y => monthlyTrades[`${y}${month}`]).filter(v => v != null);
+      return vals.length ? Math.round(vals.reduce((a, b) => a + b) / vals.length) : null;
+    });
+
     const info = kbIndexData[districtName];
-    const total = monthly.reduce((sum, item) => sum + item.count, 0);
-    const max = Math.max(...monthly.map(item => item.count), ...previous, 0);
+    const curTotal = curYearData.filter(v => v != null).reduce((a, b) => a + b, 0);
+    const prevTotal = prevYearData.filter(v => v != null).reduce((a, b) => a + b, 0);
+    const diffPct = prevTotal ? Math.round((curTotal - prevTotal) / prevTotal * 100) : null;
 
     document.getElementById('volume-sheet-name').textContent = districtName;
     document.getElementById('volume-sheet-sub').textContent =
-      info?.index ? `KB지수 ${info.index.toFixed(2)} ${info.change > 0 ? '▲' : info.change < 0 ? '▼' : ''}${Math.abs(info.change).toFixed(2)}%` : '최근 1년 매매 거래량';
+      info?.index ? `KB지수 ${info.index.toFixed(2)} ${info.change > 0 ? '▲' : info.change < 0 ? '▼' : ''}${Math.abs(info.change).toFixed(2)}%` : '연도별 매매 거래량';
     document.getElementById('volume-stats').innerHTML = `
-      <span class="stat-item">최근 1년 ${total.toLocaleString()}건</span>
-      <span class="stat-item">월 최대 ${max.toLocaleString()}건</span>
-      <span class="stat-item">작년 동월 비교</span>
+      <span class="stat-item">${curYear}년 ${curTotal.toLocaleString()}건</span>
+      <span class="stat-item">${prevYear}년 ${prevTotal.toLocaleString()}건</span>
+      ${diffPct != null ? `<span class="stat-item volume-compare ${diffPct > 0 ? 'up' : diffPct < 0 ? 'down' : 'flat'}">${diffPct > 0 ? '▲' : diffPct < 0 ? '▼' : ''}${Math.abs(diffPct)}%</span>` : ''}
     `;
 
     const canvas = document.getElementById('volume-chart');
@@ -2577,21 +2604,28 @@ async function openDistrictVolumeSheet(districtName) {
       districtVolumeChart.destroy();
       districtVolumeChart = null;
     }
-    const valueLabelPlugin = {
-      id: 'valueLabelPlugin',
+
+    const dataLabelPlugin = {
+      id: 'dataLabelPlugin',
       afterDatasetsDraw(chart) {
         const { ctx } = chart;
         ctx.save();
-        ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.font = 'bold 9px -apple-system, BlinkMacSystemFont, sans-serif';
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        chart.data.datasets.forEach((dataset, datasetIndex) => {
-          const meta = chart.getDatasetMeta(datasetIndex);
-          meta.data.forEach((bar, index) => {
-            const value = dataset.data[index];
-            if (value == null || value === 0) return;
-            ctx.fillStyle = datasetIndex === 0 ? '#64748b' : '#2563eb';
-            ctx.fillText(`${Number(value).toLocaleString()}`, bar.x, bar.y - 4);
+        // dataset 0 = 올해(파랑), dataset 1 = 작년(회색) 만 레이블 표시
+        [0, 1].forEach(dsIdx => {
+          const dataset = chart.data.datasets[dsIdx];
+          const meta = chart.getDatasetMeta(dsIdx);
+          const color = dsIdx === 0 ? '#1d4ed8' : '#64748b';
+          meta.data.forEach((point, i) => {
+            const val = dataset.data[i];
+            if (val == null || val === 0) return;
+            const txt = val >= 1000 ? (val / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(val);
+            // 포인트 위/아래 번갈아 배치해서 겹침 방지
+            const above = (dsIdx === 0);
+            ctx.fillStyle = color;
+            ctx.textBaseline = above ? 'bottom' : 'top';
+            ctx.fillText(txt, point.x, above ? point.y - 5 : point.y + 5);
           });
         });
         ctx.restore();
@@ -2599,24 +2633,47 @@ async function openDistrictVolumeSheet(districtName) {
     };
 
     districtVolumeChart = new Chart(canvas, {
-      type: 'bar',
-      plugins: [valueLabelPlugin],
+      type: 'line',
+      plugins: [dataLabelPlugin],
       data: {
-        labels: monthly.map(item => `${item.ym.slice(2, 4)}.${item.ym.slice(4)}`),
+        labels,
         datasets: [
           {
-            label: '작년',
-            data: previous,
-            backgroundColor: 'rgba(148, 163, 184, 0.65)',
-            borderRadius: 6,
-            borderSkipped: false,
+            label: `${curYear}년`,
+            data: curYearData,
+            borderColor: '#2563eb',
+            backgroundColor: 'rgba(37, 99, 235, 0.08)',
+            borderWidth: 2.5,
+            pointRadius: 3,
+            pointHoverRadius: 5,
+            tension: 0.35,
+            fill: false,
+            spanGaps: false,
           },
           {
-            label: '올해',
-            data: monthly.map(item => item.count),
-            backgroundColor: '#2563eb',
-            borderRadius: 6,
-            borderSkipped: false,
+            label: `${prevYear}년`,
+            data: prevYearData,
+            borderColor: '#94a3b8',
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            pointRadius: 3,
+            pointHoverRadius: 5,
+            tension: 0.35,
+            fill: false,
+            spanGaps: true,
+          },
+          {
+            label: '5년 평균',
+            data: avgData,
+            borderColor: '#111827',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            borderDash: [5, 4],
+            pointRadius: 2,
+            pointHoverRadius: 4,
+            tension: 0.35,
+            fill: false,
+            spanGaps: true,
           },
         ],
       },
@@ -2626,26 +2683,24 @@ async function openDistrictVolumeSheet(districtName) {
         plugins: {
           legend: {
             display: true,
-            labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true, pointStyle: 'rectRounded' },
+            labels: { boxWidth: 24, boxHeight: 2, usePointStyle: true, pointStyle: 'line', font: { size: 11 } },
           },
           tooltip: {
+            mode: 'index',
+            intersect: false,
             callbacks: {
-              title: items => {
-                const idx = items?.[0]?.dataIndex ?? 0;
-                const ym = monthly[idx]?.ym || '';
-                return ym ? `${ym.slice(0, 4)}.${ym.slice(4)} 기준` : '';
-              },
-              label: ctx => `${ctx.dataset.label} ${ctx.raw}건`,
+              title: items => `${items[0].label}`,
+              label: ctx => `${ctx.dataset.label}: ${ctx.raw != null ? Number(ctx.raw).toLocaleString() + '건' : '-'}`,
             },
           },
         },
         scales: {
-          x: { grid: { display: false }, ticks: { font: { size: 9 }, autoSkip: false, maxRotation: 0, minRotation: 0 } },
+          x: { grid: { display: false }, ticks: { font: { size: 10 }, autoSkip: false, maxRotation: 0, minRotation: 0 } },
           y: {
             beginAtZero: true,
-            ticks: { display: false, precision: 0, font: { size: 10 } },
+            ticks: { display: true, precision: 0, font: { size: 10 }, maxTicksLimit: 5 },
             border: { display: false },
-            grid: { color: '#f3f4f6', drawTicks: false },
+            grid: { color: '#f3f4f6' },
           },
         },
       },
@@ -3100,8 +3155,8 @@ async function startApp() {
     }
   }
 
-  // 현재 구 데이터 로드 (역지오코딩 결과 or 기본값)
-  if (currentDistrict) loadDistrictData(currentDistrict);
+  // 구 마커만 표시 — 실제 데이터는 구 마커 클릭 시 로드 (지연 로딩)
+  updateVisibleMarkers();
 }
 
 startApp();

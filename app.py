@@ -903,7 +903,7 @@ async def get_kb_index():
 async def get_district_volume(
     district: str = Query(...),
 ):
-    """구/시 단위 최근 24개월 매매 거래량"""
+    """구/시 단위 최근 60개월 매매 거래량"""
     if district not in DISTRICTS:
         return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
 
@@ -912,20 +912,21 @@ async def get_district_volume(
     cached_at = _district_volume_cached_at.get(district)
     if cached is not None and cached_at is not None:
         age = (now - cached_at).total_seconds() / 3600
-        if age < DISTRICT_VOLUME_TTL_HOURS:
+        cached_months = len(cached.get("monthly_trades", {}))
+        if age < DISTRICT_VOLUME_TTL_HOURS and cached_months >= 50:
             return cached
 
     import asyncio
 
     lawd_codes = DISTRICTS[district]
-    deal_yms = get_recent_deal_yms(24)
+    deal_yms = get_recent_deal_yms(60)
     tasks = [fetch_transactions(code, ym) for code in lawd_codes for ym in deal_yms]
     results = await asyncio.gather(*tasks)
     all_raw = [row for batch in results for row in batch]
 
     result = {
         "district": district,
-        "monthly_trades": aggregate_monthly_trade_counts(all_raw, recent_count=24),
+        "monthly_trades": aggregate_monthly_trade_counts(all_raw, recent_count=60),
     }
     _district_volume_cache[district] = result
     _district_volume_cached_at[district] = now
