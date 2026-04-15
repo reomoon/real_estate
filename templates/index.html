@@ -3005,10 +3005,11 @@ function refreshData() {
 (function initSwipe() {
   const sheet   = document.getElementById('sheet');
   const fixedEl = document.getElementById('sheet-fixed');
-  let startY = 0, startedOnFixed = false;
+  let startX = 0, startY = 0, startedOnFixed = false;
   let dragging = false;
 
   sheet.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     startedOnFixed = fixedEl.contains(e.target);
     dragging = true;
@@ -3017,8 +3018,10 @@ function refreshData() {
   sheet.addEventListener('touchend', e => {
     if (!dragging) return;
     dragging = false;
+    const dx = e.changedTouches[0].clientX - startX;
     const dy = e.changedTouches[0].clientY - startY;
-    if (dy > 50 && startedOnFixed) closeSheet();
+    // 세로 이동이 가로 이동보다 클 때만 (순수 아래 스와이프) 닫기
+    if (dy > 50 && Math.abs(dy) > Math.abs(dx) && startedOnFixed) closeSheet();
   }, { passive: true });
 })();
 
