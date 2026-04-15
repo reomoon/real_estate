@@ -15,7 +15,8 @@ import html as html_lib
 from zipfile import ZipFile
 from dotenv import load_dotenv
 import time
-from pathlib import Path
+from upstash_redis import Redis as RedisSync
+from upstash_redis.asyncio import Redis as RedisAsync
 
 # .env 파일에서 환경변수 로드
 load_dotenv()
@@ -43,6 +44,16 @@ async def _shutdown_http_client():
     global _shared_client
     if _shared_client and not _shared_client.is_closed:
         await _shared_client.aclose()
+
+# ─── Redis 클라이언트 ─────────────────────────────────────────
+_REDIS_URL   = os.getenv("UPSTASH_REDIS_REST_URL")
+_REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+
+def _redis() -> RedisSync:
+    return RedisSync(url=_REDIS_URL, token=_REDIS_TOKEN)
+
+def _redis_async() -> RedisAsync:
+    return RedisAsync(url=_REDIS_URL, token=_REDIS_TOKEN)
 
 # ─── API 설정 ────────────────────────────────────────────────
 TRADE_API_KEY = os.getenv("TRADE_API_KEY")
@@ -135,63 +146,49 @@ def _get_shared_client() -> httpx.AsyncClient:
         )
     return _shared_client
 
-# ─── 좌표 캐시 (파일 영속) ────────────────────────────────────
-GEO_CACHE_FILE = "geo_cache.json"
+# ─── 좌표 캐시 (Redis 영속) ───────────────────────────────────
 _geo_cache: dict = {}
 
 def _load_geo_cache():
     global _geo_cache
     try:
-        if os.path.exists(GEO_CACHE_FILE):
-            with open(GEO_CACHE_FILE, encoding="utf-8") as f:
-                _geo_cache = json.load(f)
+        val = _redis().get("geo_cache")
+        if val:
+            _geo_cache = json.loads(val)
             logger.info(f"geo cache 로드: {len(_geo_cache)}개")
     except Exception as e:
         logger.warning(f"geo cache 로드 실패: {e}")
 
-def _save_geo_cache():
+async def _save_geo_cache():
     try:
-        with open(GEO_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_geo_cache, f, ensure_ascii=False)
+        await _redis_async().set("geo_cache", json.dumps(_geo_cache, ensure_ascii=False))
     except Exception as e:
         logger.warning(f"geo cache 저장 실패: {e}")
 
 _load_geo_cache()
 
-# ─── 아파트 데이터 파일 영속 캐시 ─────────────────────────────
-APT_CACHE_FILE = "apt_cache.json"
+# ─── 아파트 데이터 Redis 캐시 ──────────────────────────────────
 APT_CACHE_TTL_HOURS = 24  # 하루 지나면 재조회
 
-def _load_apt_cache():
+async def _load_apt_cache_redis(district: str) -> list | None:
+    """Redis에서 특정 구 데이터 조회 (없거나 만료 시 None)"""
     try:
-        if os.path.exists(APT_CACHE_FILE):
-            with open(APT_CACHE_FILE, encoding="utf-8") as f:
-                stored = json.load(f)
-            now = datetime.now()
-            loaded = 0
-            for district, entry in stored.items():
-                saved_at = datetime.fromisoformat(entry.get("saved_at", "2000-01-01"))
-                age_hours = (now - saved_at).total_seconds() / 3600
-                if age_hours < APT_CACHE_TTL_HOURS:
-                    _cache["apartments"][district] = entry["apartments"]
-                    loaded += 1
-            logger.info(f"apt cache 로드: {loaded}개 구 (TTL {APT_CACHE_TTL_HOURS}h)")
+        val = await _redis_async().get(f"apt:{district}")
+        if val:
+            return json.loads(val)
     except Exception as e:
-        logger.warning(f"apt cache 로드 실패: {e}")
+        logger.warning(f"apt cache 로드 실패 [{district}]: {e}")
+    return None
 
-def _save_apt_cache(district: str, apartments: list):
+async def _save_apt_cache(district: str, apartments: list):
     try:
-        stored = {}
-        if os.path.exists(APT_CACHE_FILE):
-            with open(APT_CACHE_FILE, encoding="utf-8") as f:
-                stored = json.load(f)
-        stored[district] = {"saved_at": datetime.now().isoformat(), "apartments": apartments}
-        with open(APT_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(stored, f, ensure_ascii=False)
+        await _redis_async().set(
+            f"apt:{district}",
+            json.dumps(apartments, ensure_ascii=False),
+            ex=APT_CACHE_TTL_HOURS * 3600,
+        )
     except Exception as e:
-        logger.warning(f"apt cache 저장 실패: {e}")
-
-_load_apt_cache()
+        logger.warning(f"apt cache 저장 실패 [{district}]: {e}")
 
 # 마커 기준 면적 순서: 84㎡ 우선, 없으면 59㎡, 없으면 가장 가까운 면적
 PREFERRED_AREAS = [84, 59]
@@ -561,9 +558,19 @@ async def get_apartments(
     if district not in DISTRICTS:
         return JSONResponse({"error": "존재하지 않는 구"}, status_code=400)
 
-    # 12개월 캐시 히트 → 즉시 반환 (dong 필터 적용)
+    # 1차: 메모리 캐시 히트 → 즉시 반환
     if district in _cache["apartments"]:
         apts = _cache["apartments"][district]
+        if dong:
+            apts = [a for a in apts if a.get("dong") == dong]
+        return {"apartments": apts, "cached": True, "full": True, "monthly_trades": {}}
+
+    # 2차: Redis 캐시 확인
+    redis_apts = await _load_apt_cache_redis(district)
+    if redis_apts:
+        _cache["apartments"][district] = redis_apts  # 메모리에도 올려둠
+        logger.info(f"[{district}] Redis 캐시 히트: {len(redis_apts)}개")
+        apts = redis_apts
         if dong:
             apts = [a for a in apts if a.get("dong") == dong]
         return {"apartments": apts, "cached": True, "full": True, "monthly_trades": {}}
@@ -809,7 +816,7 @@ async def get_apartments(
     # 12개월 full 데이터만 캐시 (quick=3개월은 캐시 안 함)
     if not quick:
         _cache["apartments"][district] = apartments
-        _save_apt_cache(district, apartments)
+        await _save_apt_cache(district, apartments)
     logger.info(f"[{district}] 마커: {len(apartments)}개 (months={months}, 좌표캐시: {sum(1 for a in apartments if 'lat' in a)}개)")
 
     if dong:
@@ -960,7 +967,7 @@ async def update_geocache(request: Request):
     lat, lng = data.get("lat"), data.get("lng")
     if key and lat and lng:
         _geo_cache[key] = {"lat": float(lat), "lng": float(lng)}
-        _save_geo_cache()
+        await _save_geo_cache()
     return {"ok": True}
 
 
@@ -1257,21 +1264,20 @@ def _match_snu_admission(name: str) -> dict | None:
 # ── 네이버 부동산 호가 ────────────────────────────────────────
 NAVER_ASKING_TTL = 3600 * 4   # 호가 캐시 4시간
 NAVER_TOKEN_TTL  = 3600 * 2   # JWT 토큰 캐시 2시간 (만료 3시간이므로 여유 있게)
-_COMPLEX_CACHE_FILE = Path("naver_complex_no.json")  # 영구 complexNo 저장
-
 def _load_complex_cache() -> dict:
     try:
-        if _COMPLEX_CACHE_FILE.exists():
-            return json.loads(_COMPLEX_CACHE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
+        val = _redis().get("naver_complex_cache")
+        if val:
+            return json.loads(val)
+    except Exception as e:
+        logger.warning(f"[Naver] complexNo 로드 실패: {e}")
     return {}
 
-def _save_complex_cache(cache: dict) -> None:
+async def _save_complex_cache(cache: dict) -> None:
     try:
-        _COMPLEX_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        await _redis_async().set("naver_complex_cache", json.dumps(cache, ensure_ascii=False))
     except Exception as e:
-        logger.warning(f"[Naver] complexNo 파일 저장 실패: {e}")
+        logger.warning(f"[Naver] complexNo 저장 실패: {e}")
 
 _naver_complex_cache: dict = _load_complex_cache()   # apt_key -> complex_no (영구)
 _naver_asking_cache: dict  = {}   # apt_key -> {price_84, price_59, complex_no, ts, ...}
@@ -1527,7 +1533,7 @@ async def get_naver_asking(
         complex_no = await _search_naver_complex_no(name)
         if complex_no:
             _naver_complex_cache[key] = complex_no
-            _save_complex_cache(_naver_complex_cache)
+            await _save_complex_cache(_naver_complex_cache)
 
     if not complex_no:
         _naver_asking_cache[key] = {"error": "not_found", "ts": now - NAVER_ASKING_TTL + 1800}
