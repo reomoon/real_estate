@@ -37,6 +37,28 @@ async def _startup_naver_token():
     else:
         logger.warning("[Naver] 시작 시 토큰 획득 실패 — 첫 요청 시 재시도")
 
+    # 인기 구 데이터 백그라운드 프리로드 (캐시 없는 구만)
+    import asyncio
+    asyncio.create_task(_preload_popular_districts())
+
+
+PRELOAD_DISTRICTS = ["강남구", "서초구", "송파구", "마포구", "용산구", "성동구", "광진구", "영등포구"]
+
+async def _preload_popular_districts():
+    """서버 시작 후 백그라운드에서 인기 구 데이터를 순차 로드"""
+    import asyncio
+    for district in PRELOAD_DISTRICTS:
+        if district in _cache["apartments"]:
+            logger.info(f"[프리로드] {district} 이미 캐시됨 — 스킵")
+            continue
+        try:
+            logger.info(f"[프리로드] {district} 시작")
+            await get_apartments(district=district, dong="", quick=False)
+            logger.info(f"[프리로드] {district} 완료")
+        except Exception as e:
+            logger.warning(f"[프리로드] {district} 실패: {e}")
+        await asyncio.sleep(1)  # API 과부하 방지용 텀
+
 @app.on_event("shutdown")
 async def _shutdown_http_client():
     """서버 종료 시 공유 HTTP 클라이언트 정리"""
